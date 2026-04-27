@@ -1,0 +1,31 @@
+# Module 1 baseline. Postgres only.
+# Overlays for later modules will live alongside this file.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: shortn
+      POSTGRES_PASSWORD: shortn
+      POSTGRES_DB: shortn
+    ports:
+      - "5433:5432"
+    volumes:
+      - shortn_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U shortn"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@example.com
+      PGADMIN_DEFAULT_PASSWORD: shortn
+    ports:
+      - "5050:80"
+    depends_on:
+      - postgres
+
+volumes:
+  shortn_pg_data:

@@ -1,0 +1,185 @@
+---
+
+## Current Position
+
+**Module:** _(e.g., 3 — Caching)_
+**Stage:** _(e.g., 4 — Break the fix)_
+**Last session:** _(YYYY-MM-DD)_
+**Next action:** _(one sentence — what you'll do when you sit down next)_
+
+**Open questions / things I'm stuck on:**
+- _(blank to start)_
+
+---
+
+## Module Status
+
+| # | Module | Status | Started | Finished | Notes |
+|---|--------|--------|---------|----------|-------|
+| 1 | Single Box | ⬜ Not started | — | — | — |
+| 2 | API Design | ⬜ | — | — | — |
+| 3 | Caching | ⬜ | — | — | — |
+| 4 | Horizontal Scale | ⬜ | — | — | — |
+| 5 | Async Work | ⬜ | — | — | — |
+| 6 | Data: Replication, Sharding, Migrations | ⬜ | — | — | — |
+| 7 | Auth & Security | ⬜ | — | — | — |
+| 8 | Search | ⬜ | — | — | — |
+| 9 | Reliability & Observability | ⬜ | — | — | — |
+| 10 | Real-Time & Geo (optional) | ⬜ | — | — | — |
+
+**Status legend:** ⬜ Not started · 🟡 In progress · ✅ Done · ⏸️ Paused · 🔁 Revisited
+
+---
+
+## Decisions Log
+
+> One row per non-obvious design decision. Future-you will thank present-you. Keep "Why" and "Tradeoff" honest — if you picked something because a tutorial said so, write that.
+
+| Date | Module | Decision | Why | Tradeoff accepted |
+|------|--------|----------|-----|-------------------|
+| _ex: 2026-05-04_ | _1_ | _Pool size = 20 per Node instance_ | _DB has 100 max conns, planning for 4 instances + headroom_ | _Will need to revisit when adding workers in M5_ |
+
+---
+
+## Failure Catalog
+
+> Every failure you produced and what it taught you. This becomes your personal "things that bite in production" reference. Don't water it down — write what actually happened.
+
+### Template
+
+```
+### F-NN: <short title>
+- **Module/Stage:** M_ S_
+- **What I did:** (the action that caused it)
+- **What broke:** (symptom — error, latency spike, data loss, etc.)
+- **Root cause in one sentence:**
+- **Fix:**
+- **What I'd watch for in production:**
+```
+
+### Example (delete once you have your own)
+
+```
+### F-01: Connection pool exhaustion under load
+- **Module/Stage:** M1 S1
+- **What I did:** k6 ramp to 1000 RPS against single Node + Postgres
+- **What broke:** p99 went from 8ms to 4200ms at ~600 RPS, then 503s
+- **Root cause in one sentence:** No pool configured — pg client opened a fresh
+  connection per request, Postgres hit max_connections, new requests queued in Node
+  until upstream timeout.
+- **Fix:** pg.Pool with max=20, idleTimeoutMillis=30000
+- **What I'd watch for in production:** active_connections vs pool_size as a
+  ratio metric; alert at >80%. Also: queue length in app, not just DB.
+```
+
+---
+
+## Cost Log
+
+> Pulled from AWS Cost Explorer at the end of each AWS exercise. Track even if it's $0.30 — pattern recognition matters more than the absolute number.
+
+| Date | Module | Services used | Hours active | Cost (USD) | Notes |
+|------|--------|---------------|--------------|------------|-------|
+| _ex: 2026-05-12_ | _1_ | _t3.micro, db.t3.micro_ | _3h_ | _$0.18_ | _Forgot to delete EBS volume, +$0.40 next morning_ |
+
+**Running total:** $0.00
+
+**Cost surprises** (things that cost more than I expected — review before starting next module):
+- _(blank to start)_
+
+---
+
+## Concepts Earned
+
+> Claude should not let you check a concept off until you can explain it in your own words *to a junior engineer who's never heard of it*. The test is the explanation, not the build. If you can't write the one-sentence explanation, the concept isn't earned yet.
+
+### Module 1
+- [ ] Throughput vs latency (and why p99 ≠ p50 × constant)
+- [ ] Little's Law in plain English
+- [ ] Why every connection pool size is a guess that needs validation
+- [ ] What backpressure is and where it lives in your stack
+- [ ] Why graceful shutdown is non-negotiable
+- [ ] Idempotency — and the request that taught you why
+
+### Module 2
+- [ ] Why offset pagination dies on large tables
+- [ ] When gRPC is right and when it's resume-driven design
+- [ ] Idempotency keys — why client-generated, not server-generated
+- [ ] The async API pattern (202 → poll / webhook) and when each fits
+
+### Module 3
+- [ ] Cache-aside vs write-through — when each makes sense
+- [ ] Thundering herd — what it looks like in metrics
+- [ ] Why "fail open vs fail closed" is a product decision, not a tech one
+- [ ] Circuit breaker states (closed/open/half-open) without looking it up
+
+### Module 4
+- [ ] Every piece of accidental state in a single-instance app
+- [ ] Why distributed locks are not as simple as `SETNX`
+- [ ] Fencing tokens — what they prevent that TTLs can't
+- [ ] Stateless vs stateful services, sharply
+
+### Module 5
+- [ ] At-least-once vs at-most-once vs effectively-once
+- [ ] Idempotent consumer pattern
+- [ ] Why "exactly once" is mostly marketing
+- [ ] Consumer lag as the queue health metric
+- [ ] When SKIP LOCKED is enough and when it isn't
+
+### Module 6
+- [ ] Replication lag — what causes it, what bounds it
+- [ ] Read-your-writes and how to provide it cheaply
+- [ ] Why sharding kills cross-shard joins (and what you do instead)
+- [ ] Expand-contract migration in 5 ordered steps without looking it up
+- [ ] PACELC over CAP — what the L and the C add
+
+### Module 7
+- [ ] Why bcrypt/argon2, not SHA-anything
+- [ ] JWT revocation — actually how
+- [ ] IDOR — and why authentication ≠ authorization
+- [ ] Timing attacks — what makes them possible
+- [ ] What WAF can and can't do at L7
+
+### Module 8
+- [ ] Inverted index intuition (how does ES find a word fast?)
+- [ ] Dual-write problem — why it's a class, not a bug
+- [ ] CDC vs dual-write tradeoffs
+- [ ] When Postgres FTS is enough (most of the time)
+
+### Module 9
+- [ ] Four golden signals — without looking them up
+- [ ] SLI vs SLO vs SLA in your own words
+- [ ] Why retries with jitter, not retries
+- [ ] Metastable failure — what it is, why it doesn't self-heal
+- [ ] Load shedding as the answer
+- [ ] Canary vs blue-green vs rolling — when each fits
+
+---
+
+## Postmortems
+
+> One per module, written by you (not Claude) at Stage 7. Keep them in `/postmortems/MN-postmortem.md` and link here.
+
+- M1: _link when written_
+- M2: _link when written_
+- ... etc
+
+---
+
+## Re-Reads & Side-Quests
+
+> Books and posts you read *after* feeling the pain. Track which page/chapter mapped to which failure — that's the only reading log that matters.
+
+| Date | Source | Triggered by | One-line takeaway |
+|------|--------|--------------|-------------------|
+| _ex: 2026-05-15_ | _DDIA Ch. 7_ | _F-04 (read-your-writes 404)_ | _"Linearizability is what most people think 'consistency' means"_ |
+
+---
+
+## Session Log
+
+> Optional but recommended. One line per session. Helps you notice patterns ("I always burn out on Stage 4 — maybe I'm rushing Stage 3").
+
+| Date | Duration | Module/Stage | What I shipped | What I'm avoiding |
+|------|----------|--------------|----------------|-------------------|
+| _ex: 2026-05-04_ | _2h_ | _M1 S0→S1_ | _baseline app + first k6 run_ | _writing graceful shutdown — feels boring_ |

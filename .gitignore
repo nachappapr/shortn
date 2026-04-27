@@ -1,0 +1,41 @@
+# deps
+node_modules/
+package-lock.json.bak
+
+# env & secrets
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+
+# terraform
+infra/terraform/**/.terraform/
+infra/terraform/**/terraform.tfstate
+infra/terraform/**/terraform.tfstate.*
+infra/terraform/**/*.tfvars
+infra/terraform/**/*.tfvars.json
+infra/terraform/**/.terraform.lock.hcl
+
+# docker
+*.pid
+
+# os / editor
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# scratch — exploration code, not for sharing
+scratch/*
+!scratch/.gitkeep
+
+# logs and load test output
+*.log
+load/k6/results/
+
+# build artifacts
+dist/
+build/
+coverage/

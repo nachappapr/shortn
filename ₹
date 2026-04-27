@@ -1,0 +1,138 @@
+sh: locale: not found
+2026-04-27 09:52:08.861 UTC [35] WARNING:  no usable system locales were found
+sh: locale: not found
+2026-04-27 09:52:08.861 UTC [35] WARNING:  no usable system locales were found
+initdb: warning: enabling "trust" authentication for local connections
+initdb: hint: You can change this by editing pg_hba.conf or using the option -A, or --auth-local and --auth-host, the next time you run initdb.
+2026-04-27 09:52:09.293 UTC [1] LOG:  starting PostgreSQL 16.13 on aarch64-unknown-linux-musl, compiled by gcc (Alpine 15.2.0) 15.2.0, 64-bit
+2026-04-27 09:52:09.293 UTC [1] LOG:  listening on IPv4 address "0.0.0.0", port 5432
+2026-04-27 09:52:09.293 UTC [1] LOG:  listening on IPv6 address "::", port 5432
+2026-04-27 09:52:09.294 UTC [1] LOG:  listening on Unix socket "/var/run/postgresql/.s.PGSQL.5432"
+2026-04-27 09:52:09.296 UTC [57] LOG:  database system was shut down at 2026-04-27 09:52:09 UTC
+2026-04-27 09:52:09.298 UTC [1] LOG:  database system is ready to accept connections
+2026-04-27 09:57:09.310 UTC [55] LOG:  checkpoint starting: time
+2026-04-27 09:57:13.709 UTC [55] LOG:  checkpoint complete: wrote 45 buffers (0.3%); 0 WAL file(s) added, 0 removed, 0 recycled; write=4.389 s, sync=0.004 s, total=4.399 s; sync files=12, longest=0.003 s, average=0.001 s; distance=260 kB, estimate=260 kB; lsn=0/195FBC8, redo lsn=0/195FB90
+2026-04-27 10:09:17.417 UTC [1] LOG:  received fast shutdown request
+2026-04-27 10:09:17.418 UTC [1] LOG:  aborting any active transactions
+2026-04-27 10:09:17.419 UTC [1] LOG:  background worker "logical replication launcher" (PID 60) exited with exit code 1
+2026-04-27 10:09:17.419 UTC [55] LOG:  shutting down
+2026-04-27 10:09:17.420 UTC [55] LOG:  checkpoint starting: shutdown immediate
+2026-04-27 10:09:17.425 UTC [55] LOG:  checkpoint complete: wrote 42 buffers (0.3%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.001 s, sync=0.003 s, total=0.006 s; sync files=38, longest=0.001 s, average=0.001 s; distance=153 kB, estimate=249 kB; lsn=0/1986230, redo lsn=0/1986230
+2026-04-27 10:09:20.104 UTC [1] LOG:  starting PostgreSQL 16.13 on aarch64-unknown-linux-musl, compiled by gcc (Alpine 15.2.0) 15.2.0, 64-bit
+2026-04-27 10:09:20.104 UTC [1] LOG:  listening on IPv4 address "0.0.0.0", port 5432
+2026-04-27 10:09:20.104 UTC [1] LOG:  listening on IPv6 address "::", port 5432
+2026-04-27 10:09:20.105 UTC [1] LOG:  listening on Unix socket "/var/run/postgresql/.s.PGSQL.5432"
+initdb: warning: enabling "trust" authentication for local connections
+initdb: hint: You can change this by editing pg_hba.conf or using the option -A, or --auth-local and --auth-host, the next time you run initdb.
+2026-04-27 09:52:09.293 UTC [1] LOG:  starting PostgreSQL 16.13 on aarch64-unknown-linux-musl, compiled by gcc (Alpine 15.2.0) 15.2.0, 64-bit
+2026-04-27 09:52:09.293 UTC [1] LOG:  listening on IPv4 address "0.0.0.0", port 5432
+2026-04-27 09:52:09.293 UTC [1] LOG:  listening on IPv6 address "::", port 5432
+2026-04-27 09:52:09.294 UTC [1] LOG:  listening on Unix socket "/var/run/postgresql/.s.PGSQL.5432"
+2026-04-27 09:52:09.296 UTC [57] LOG:  database system was shut down at 2026-04-27 09:52:09 UTC
+2026-04-27 09:52:09.298 UTC [1] LOG:  database system is ready to accept connections
+2026-04-27 09:57:09.310 UTC [55] LOG:  checkpoint starting: time
+2026-04-27 09:57:13.709 UTC [55] LOG:  checkpoint complete: wrote 45 buffers (0.3%); 0 WAL file(s) added, 0 removed, 0 recycled; write=4.389 s, sync=0.004 s, total=4.399 s; sync files=12, longest=0.003 s, average=0.001 s; distance=260 kB, estimate=260 kB; lsn=0/195FBC8, redo lsn=0/195FB90
+2026-04-27 10:09:17.417 UTC [1] LOG:  received fast shutdown request
+2026-04-27 10:09:17.418 UTC [1] LOG:  aborting any active transactions
+2026-04-27 10:09:17.419 UTC [1] LOG:  background worker "logical replication launcher" (PID 60) exited with exit code 1
+2026-04-27 10:09:17.419 UTC [55] LOG:  shutting down
+2026-04-27 10:09:17.420 UTC [55] LOG:  checkpoint starting: shutdown immediate
+2026-04-27 10:09:17.425 UTC [55] LOG:  checkpoint complete: wrote 42 buffers (0.3%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.001 s, sync=0.003 s, total=0.006 s; sync files=38, longest=0.001 s, average=0.001 s; distance=153 kB, estimate=249 kB; lsn=0/1986230, redo lsn=0/1986230
+2026-04-27 10:09:20.104 UTC [1] LOG:  starting PostgreSQL 16.13 on aarch64-unknown-linux-musl, compiled by gcc (Alpine 15.2.0) 15.2.0, 64-bit
+2026-04-27 10:09:20.104 UTC [1] LOG:  listening on IPv4 address "0.0.0.0", port 5432
+2026-04-27 10:09:20.104 UTC [1] LOG:  listening on IPv6 address "::", port 5432
+2026-04-27 10:09:20.105 UTC [1] LOG:  listening on Unix socket "/var/run/postgresql/.s.PGSQL.5432"
+2026-04-27 10:09:20.106 UTC [29] LOG:  database system was shut down at 2026-04-27 10:09:17 UTC
+2026-04-27 10:09:20.109 UTC [1] LOG:  database system is ready to accept connections
+2026-04-27 10:10:00.229 UTC [1] LOG:  received fast shutdown request
+2026-04-27 10:10:00.230 UTC [1] LOG:  aborting any active transactions
+2026-04-27 10:10:00.231 UTC [1] LOG:  background worker "logical replication launcher" (PID 32) exited with exit code 1
+2026-04-27 10:10:00.231 UTC [27] LOG:  shutting down
+2026-04-27 10:10:00.232 UTC [27] LOG:  checkpoint starting: shutdown immediate
+2026-04-27 10:10:00.234 UTC [27] LOG:  checkpoint complete: wrote 3 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.001 s, sync=0.001 s, total=0.003 s; sync files=2, longest=0.001 s, average=0.001 s; distance=0 kB, estimate=0 kB; lsn=0/19862E0, redo lsn=0/19862E0
+2026-04-27 10:09:20.106 UTC [29] LOG:  database system was shut down at 2026-04-27 10:09:17 UTC
+2026-04-27 10:09:20.109 UTC [1] LOG:  database system is ready to accept connections
+2026-04-27 10:10:00.229 UTC [1] LOG:  received fast shutdown request
+2026-04-27 10:10:00.230 UTC [1] LOG:  aborting any active transactions
+2026-04-27 10:10:00.231 UTC [1] LOG:  background worker "logical replication launcher" (PID 32) exited with exit code 1
+2026-04-27 10:10:00.231 UTC [27] LOG:  shutting down
+2026-04-27 10:10:00.232 UTC [27] LOG:  checkpoint starting: shutdown immediate
+2026-04-27 10:10:00.234 UTC [27] LOG:  checkpoint complete: wrote 3 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.001 s, sync=0.001 s, total=0.003 s; sync files=2, longest=0.001 s, average=0.001 s; distance=0 kB, estimate=0 kB; lsn=0/19862E0, redo lsn=0/19862E0
+2026-04-27 10:10:00.236 UTC [1] LOG:  database system is shut down
+2026-04-27 10:10:01.543 UTC [1] LOG:  starting PostgreSQL 16.13 on aarch64-unknown-linux-musl, compiled by gcc (Alpine 15.2.0) 15.2.0, 64-bit
+2026-04-27 10:10:01.544 UTC [1] LOG:  listening on IPv4 address "0.0.0.0", port 5432
+2026-04-27 10:10:01.544 UTC [1] LOG:  listening on IPv6 address "::", port 5432
+2026-04-27 10:10:01.545 UTC [1] LOG:  listening on Unix socket "/var/run/postgresql/.s.PGSQL.5432"
+2026-04-27 10:10:01.546 UTC [29] LOG:  database system was shut down at 2026-04-27 10:10:00 UTC
+2026-04-27 10:10:01.548 UTC [1] LOG:  database system is ready to accept connections
+2026-04-27 10:15:01.601 UTC [27] LOG:  checkpoint starting: time
+2026-04-27 10:15:01.725 UTC [27] LOG:  checkpoint complete: wrote 4 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.113 s, sync=0.003 s, total=0.124 s; sync files=3, longest=0.002 s, average=0.001 s; distance=0 kB, estimate=0 kB; lsn=0/19863C8, redo lsn=0/1986390
+2026-04-27 10:10:00.236 UTC [1] LOG:  database system is shut down
+2026-04-27 10:10:01.543 UTC [1] LOG:  starting PostgreSQL 16.13 on aarch64-unknown-linux-musl, compiled by gcc (Alpine 15.2.0) 15.2.0, 64-bit
+2026-04-27 10:10:01.544 UTC [1] LOG:  listening on IPv4 address "0.0.0.0", port 5432
+2026-04-27 10:10:01.544 UTC [1] LOG:  listening on IPv6 address "::", port 5432
+2026-04-27 10:10:01.545 UTC [1] LOG:  listening on Unix socket "/var/run/postgresql/.s.PGSQL.5432"
+2026-04-27 10:10:01.546 UTC [29] LOG:  database system was shut down at 2026-04-27 10:10:00 UTC
+2026-04-27 10:10:01.548 UTC [1] LOG:  database system is ready to accept connections
+2026-04-27 10:15:01.601 UTC [27] LOG:  checkpoint starting: time
+2026-04-27 10:15:01.725 UTC [27] LOG:  checkpoint complete: wrote 4 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.113 s, sync=0.003 s, total=0.124 s; sync files=3, longest=0.002 s, average=0.001 s; distance=0 kB, estimate=0 kB; lsn=0/19863C8, redo lsn=0/1986390
+2026-04-27 10:25:01.933 UTC [27] LOG:  checkpoint starting: time
+2026-04-27 10:25:02.251 UTC [27] LOG:  checkpoint complete: wrote 4 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.310 s, sync=0.004 s, total=0.319 s; sync files=3, longest=0.003 s, average=0.002 s; distance=0 kB, estimate=0 kB; lsn=0/1986630, redo lsn=0/19865F8
+2026-04-27 10:30:01.356 UTC [27] LOG:  checkpoint starting: time
+2026-04-27 10:30:01.569 UTC [27] LOG:  checkpoint complete: wrote 3 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.207 s, sync=0.002 s, total=0.213 s; sync files=3, longest=0.001 s, average=0.001 s; distance=0 kB, estimate=0 kB; lsn=0/1986908, redo lsn=0/19868D0
+2026-04-27 12:59:12.523 UTC [27] LOG:  checkpoint starting: time
+2026-04-27 12:59:12.740 UTC [27] LOG:  checkpoint complete: wrote 3 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.208 s, sync=0.003 s, total=0.217 s; sync files=3, longest=0.002 s, average=0.001 s; distance=0 kB, estimate=0 kB; lsn=0/1986C40, redo lsn=0/1986C08
+2026-04-27 13:07:08.128 UTC [8337] ERROR:  duplicate key value violates unique constraint "urls_pkey"
+2026-04-27 13:07:08.128 UTC [8337] DETAIL:  Key (code)=(b72f734c) already exists.
+2026-04-27 13:07:08.128 UTC [8337] STATEMENT:  INSERT INTO urls (code, original_url) VALUES ($1, $2)
+2026-04-27 13:07:11.083 UTC [8476] ERROR:  duplicate key value violates unique constraint "urls_pkey"
+2026-04-27 13:07:11.083 UTC [8476] DETAIL:  Key (code)=(9a08e292) already exists.
+2026-04-27 13:07:11.083 UTC [8476] STATEMENT:  INSERT INTO urls (code, original_url) VALUES ($1, $2)
+2026-04-27 13:09:12.949 UTC [27] LOG:  checkpoint starting: time
+2026-04-27 13:11:25.061 UTC [27] LOG:  checkpoint complete: wrote 1308 buffers (8.0%); 0 WAL file(s) added, 0 removed, 1 recycled; write=132.104 s, sync=0.004 s, total=132.112 s; sync files=13, longest=0.002 s, average=0.001 s; distance=19375 kB, estimate=19375 kB; lsn=0/2FCCDA0, redo lsn=0/2C72948
+2026-04-27 13:19:12.169 UTC [27] LOG:  checkpoint starting: time
+2026-04-27 13:20:13.329 UTC [9457] ERROR:  duplicate key value violates unique constraint "urls_pkey"
+2026-04-27 13:20:13.329 UTC [9457] DETAIL:  Key (code)=(aa4b3330) already exists.
+2026-04-27 10:25:01.933 UTC [27] LOG:  checkpoint starting: time
+2026-04-27 10:25:02.251 UTC [27] LOG:  checkpoint complete: wrote 4 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.310 s, sync=0.004 s, total=0.319 s; sync files=3, longest=0.003 s, average=0.002 s; distance=0 kB, estimate=0 kB; lsn=0/1986630, redo lsn=0/19865F8
+2026-04-27 10:30:01.356 UTC [27] LOG:  checkpoint starting: time
+2026-04-27 10:30:01.569 UTC [27] LOG:  checkpoint complete: wrote 3 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.207 s, sync=0.002 s, total=0.213 s; sync files=3, longest=0.001 s, average=0.001 s; distance=0 kB, estimate=0 kB; lsn=0/1986908, redo lsn=0/19868D0
+2026-04-27 12:59:12.523 UTC [27] LOG:  checkpoint starting: time
+2026-04-27 12:59:12.740 UTC [27] LOG:  checkpoint complete: wrote 3 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.208 s, sync=0.003 s, total=0.217 s; sync files=3, longest=0.002 s, average=0.001 s; distance=0 kB, estimate=0 kB; lsn=0/1986C40, redo lsn=0/1986C08
+2026-04-27 13:07:08.128 UTC [8337] ERROR:  duplicate key value violates unique constraint "urls_pkey"
+2026-04-27 13:07:08.128 UTC [8337] DETAIL:  Key (code)=(b72f734c) already exists.
+2026-04-27 13:07:08.128 UTC [8337] STATEMENT:  INSERT INTO urls (code, original_url) VALUES ($1, $2)
+2026-04-27 13:07:11.083 UTC [8476] ERROR:  duplicate key value violates unique constraint "urls_pkey"
+2026-04-27 13:07:11.083 UTC [8476] DETAIL:  Key (code)=(9a08e292) already exists.
+2026-04-27 13:07:11.083 UTC [8476] STATEMENT:  INSERT INTO urls (code, original_url) VALUES ($1, $2)
+2026-04-27 13:09:12.949 UTC [27] LOG:  checkpoint starting: time
+2026-04-27 13:11:25.061 UTC [27] LOG:  checkpoint complete: wrote 1308 buffers (8.0%); 0 WAL file(s) added, 0 removed, 1 recycled; write=132.104 s, sync=0.004 s, total=132.112 s; sync files=13, longest=0.002 s, average=0.001 s; distance=19375 kB, estimate=19375 kB; lsn=0/2FCCDA0, redo lsn=0/2C72948
+2026-04-27 13:19:12.169 UTC [27] LOG:  checkpoint starting: time
+2026-04-27 13:20:13.329 UTC [9457] ERROR:  duplicate key value violates unique constraint "urls_pkey"
+2026-04-27 13:20:13.329 UTC [9457] DETAIL:  Key (code)=(aa4b3330) already exists.
+2026-04-27 13:20:13.329 UTC [9457] STATEMENT:  INSERT INTO urls (code, original_url) VALUES ($1, $2)
+2026-04-27 13:20:16.101 UTC [27] LOG:  checkpoint complete: wrote 637 buffers (3.9%); 0 WAL file(s) added, 0 removed, 1 recycled; write=63.913 s, sync=0.004 s, total=63.932 s; sync files=8, longest=0.002 s, average=0.001 s; distance=5389 kB, estimate=17976 kB; lsn=0/402FD40, redo lsn=0/31B5DC8
+2026-04-27 13:20:19.806 UTC [9467] ERROR:  duplicate key value violates unique constraint "urls_pkey"
+2026-04-27 13:20:19.806 UTC [9467] DETAIL:  Key (code)=(1833f956) already exists.
+2026-04-27 13:20:19.806 UTC [9467] STATEMENT:  INSERT INTO urls (code, original_url) VALUES ($1, $2)
+2026-04-27 13:20:25.753 UTC [9458] ERROR:  duplicate key value violates unique constraint "urls_pkey"
+2026-04-27 13:20:25.753 UTC [9458] DETAIL:  Key (code)=(f5ed6b6a) already exists.
+2026-04-27 13:20:25.753 UTC [9458] STATEMENT:  INSERT INTO urls (code, original_url) VALUES ($1, $2)
+2026-04-27 13:22:22.970 UTC [9477] ERROR:  duplicate key value violates unique constraint "urls_pkey"
+2026-04-27 13:22:22.970 UTC [9477] DETAIL:  Key (code)=(ca2e28c0) already exists.
+2026-04-27 13:20:13.329 UTC [9457] STATEMENT:  INSERT INTO urls (code, original_url) VALUES ($1, $2)
+2026-04-27 13:20:16.101 UTC [27] LOG:  checkpoint complete: wrote 637 buffers (3.9%); 0 WAL file(s) added, 0 removed, 1 recycled; write=63.913 s, sync=0.004 s, total=63.932 s; sync files=8, longest=0.002 s, average=0.001 s; distance=5389 kB, estimate=17976 kB; lsn=0/402FD40, redo lsn=0/31B5DC8
+2026-04-27 13:20:19.806 UTC [9467] ERROR:  duplicate key value violates unique constraint "urls_pkey"
+2026-04-27 13:20:19.806 UTC [9467] DETAIL:  Key (code)=(1833f956) already exists.
+2026-04-27 13:20:19.806 UTC [9467] STATEMENT:  INSERT INTO urls (code, original_url) VALUES ($1, $2)
+2026-04-27 13:20:25.753 UTC [9458] ERROR:  duplicate key value violates unique constraint "urls_pkey"
+2026-04-27 13:20:25.753 UTC [9458] DETAIL:  Key (code)=(f5ed6b6a) already exists.
+2026-04-27 13:20:25.753 UTC [9458] STATEMENT:  INSERT INTO urls (code, original_url) VALUES ($1, $2)
+2026-04-27 13:22:22.970 UTC [9477] ERROR:  duplicate key value violates unique constraint "urls_pkey"
+2026-04-27 13:22:22.970 UTC [9477] DETAIL:  Key (code)=(ca2e28c0) already exists.
+2026-04-27 13:22:22.970 UTC [9477] STATEMENT:  INSERT INTO urls (code, original_url) VALUES ($1, $2)
+2026-04-27 13:24:12.207 UTC [27] LOG:  checkpoint starting: time
+2026-04-27 13:28:42.040 UTC [27] LOG:  checkpoint complete: wrote 3080 buffers (18.8%); 0 WAL file(s) added, 0 removed, 2 recycled; write=269.822 s, sync=0.004 s, total=269.834 s; sync files=9, longest=0.002 s, average=0.001 s; distance=39212 kB, estimate=39212 kB; lsn=0/58011D0, redo lsn=0/5801198
+2026-04-27 13:22:22.970 UTC [9477] STATEMENT:  INSERT INTO urls (code, original_url) VALUES ($1, $2)
+2026-04-27 13:24:12.207 UTC [27] LOG:  checkpoint starting: time
+2026-04-27 13:28:42.040 UTC [27] LOG:  checkpoint complete: wrote 3080 buffers (18.8%); 0 WAL file(s) added, 0 removed, 2 recycled; write=269.822 s, sync=0.004 s, total=269.834 s; sync files=9, longest=0.002 s, average=0.001 s; distance=39212 kB, estimate=39212 kB; lsn=0/58011D0, redo lsn=0/5801198
