@@ -14,27 +14,22 @@ app.post("/shorten", async (req, res) => {
     return res.status(400).json({ error: "URL is required" });
   }
 
-  const code = randomBytes(4).toString("hex");
+  const code = randomBytes(6).toString("hex");
 
   try {
-    const existing = await pool.query(
-      "SELECT * FROM urls WHERE original_url = $1",
-      [url],
+    const result = await pool.query(
+      `INSERT INTO urls(code, original_url) 
+       VALUES ($1, $2) 
+       ON CONFLICT (original_url) 
+       DO UPDATE SET original_url = EXCLUDED.original_url
+       RETURNING *`,
+      [code, url],
     );
-    if (existing.rows.length > 0) {
-      return res.status(200).json({
-        shorten_url: new URL(
-          `/${existing.rows[0].code}`,
-          process.env.PUBLIC_BASE_URL,
-        ).href,
-      });
-    }
-    await pool.query("INSERT INTO urls (code, original_url) VALUES ($1, $2)", [
-      code,
-      url,
-    ]);
-    res.status(201).json({
-      shorten_url: new URL(`/${code}`, process.env.PUBLIC_BASE_URL).href,
+    res.status(200).json({
+      shorten_url: new URL(
+        `/${result.rows[0].code}`,
+        process.env.PUBLIC_BASE_URL,
+      ).href,
     });
   } catch (err) {
     console.error("Error inserting URL:", err);

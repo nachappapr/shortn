@@ -7,8 +7,7 @@
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "build": "tsc",
-    "start": "node src/server.js",
-    "migrate": "bash infra/migrate.sh"
+    "start": "node src/server.js"
   },
   "engines": {
     "node": ">=20"

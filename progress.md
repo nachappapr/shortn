@@ -1,11 +1,9 @@
----
-
 ## Current Position
 
-**Module:** _(e.g., 3 — Caching)_
-**Stage:** _(e.g., 4 — Break the fix)_
-**Last session:** _(YYYY-MM-DD)_
-**Next action:** _(one sentence — what you'll do when you sit down next)_
+**Module:** 1 — Single Box
+**Stage:** 4 — Break the fix
+**Last session:** 2026-04-28
+**Next action:** Restart Node between pool size runs, confirm pool size with pg_stat_activity, complete max:2 / max:10 / max:50 comparison
 
 **Open questions / things I'm stuck on:**
 - _(blank to start)_
@@ -16,7 +14,7 @@
 
 | # | Module | Status | Started | Finished | Notes |
 |---|--------|--------|---------|----------|-------|
-| 1 | Single Box | ⬜ Not started | — | — | — |
+| 1 | Single Box | 🟡 In progress | 2026-04-27 | — | — |
 | 2 | API Design | ⬜ | — | — | — |
 | 3 | Caching | ⬜ | — | — | — |
 | 4 | Horizontal Scale | ⬜ | — | — | — |
@@ -37,13 +35,14 @@
 
 | Date | Module | Decision | Why | Tradeoff accepted |
 |------|--------|----------|-----|-------------------|
-| _ex: 2026-05-04_ | _1_ | _Pool size = 20 per Node instance_ | _DB has 100 max conns, planning for 4 instances + headroom_ | _Will need to revisit when adding workers in M5_ |
-
+| 2026-04-27 | 1 | Code length = 12 hex chars (randomBytes(6)) | 4 bytes caused duplicate key collisions at 3300 RPS — birthday problem | Longer URLs (12 chars vs 8), but 281 trillion possibilities makes collision negligible |
 ---
 
 ## Failure Catalog
 
 > Every failure you produced and what it taught you. This becomes your personal "things that bite in production" reference. Don't water it down — write what actually happened.
+
+
 
 ### Template
 
@@ -72,6 +71,24 @@
   ratio metric; alert at >80%. Also: queue length in app, not just DB.
 ```
 
+### F-01: Duplicate key collision under load
+- **Module/Stage:** M1 S1
+- **What I did:** ran k6 at 1000 VUs with randomBytes(4) code generation
+- **What broke:** 6 duplicate key 500s out of 800k requests
+- **Root cause in one sentence:** 4 bytes = 4 billion possibilities, birthday problem causes collisions at high RPS
+- **Fix:** randomBytes(6) = 281 trillion possibilities, one line change
+- **What I'd watch for in production:** 500s on /shorten, alert on any duplicate key errors in logs
+
+### F-02: 15 second hang on Postgres death
+- **Module/Stage:** M1 S1
+- **What I did:** docker kill postgres container mid-load test
+- **What broke:** in-flight requests hung for 15 seconds, 93% failure rate
+- **Root cause in one sentence:** docker kill sent no FIN/RST, socket went 
+  silent, Node waited until OS TCP stack gave up after ~15 seconds
+- **Fix:** configure query timeout in pg pool so app fails in 2s, not 15s
+- **What I'd watch for in production:** p99 spikes to 15s during DB restarts 
+  or network blips — that's the tell
+
 ---
 
 ## Cost Log
@@ -94,7 +111,7 @@
 > Claude should not let you check a concept off until you can explain it in your own words *to a junior engineer who's never heard of it*. The test is the explanation, not the build. If you can't write the one-sentence explanation, the concept isn't earned yet.
 
 ### Module 1
-- [ ] Throughput vs latency (and why p99 ≠ p50 × constant)
+- [x] Throughput vs latency (and why p99 ≠ p50 × constant)
 - [ ] Little's Law in plain English
 - [ ] Why every connection pool size is a guess that needs validation
 - [ ] What backpressure is and where it lives in your stack
@@ -182,4 +199,4 @@
 
 | Date | Duration | Module/Stage | What I shipped | What I'm avoiding |
 |------|----------|--------------|----------------|-------------------|
-| _ex: 2026-05-04_ | _2h_ | _M1 S0→S1_ | _baseline app + first k6 run_ | _writing graceful shutdown — feels boring_ |
+| 2026-04-28 | 4 | M1 S1→S4 | k6 load tests, EXPLAIN ANALYZE, ON CONFLICT upsert, timeouts | pool size comparison runs |
