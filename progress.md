@@ -121,7 +121,7 @@ Next action: Deploy to EC2 + RDS, run k6 from outside AWS, compare p99 to local
 
 ### Module 1
 - [x] Throughput vs latency (and why p99 ≠ p50 × constant)
-- [ ] Little's Law in plain English
+- [x] Little's Law in plain English
 - [ ] Why every connection pool size is a guess that needs validation
 - [ ] What backpressure is and where it lives in your stack
 - [ ] Why graceful shutdown is non-negotiable
@@ -209,3 +209,4 @@ Next action: Deploy to EC2 + RDS, run k6 from outside AWS, compare p99 to local
 | Date | Duration | Module/Stage | What I shipped | What I'm avoiding |
 |------|----------|--------------|----------------|-------------------|
 | 2026-04-28 | 4 | M1 S1→S4 | k6 load tests, EXPLAIN ANALYZE, ON CONFLICT upsert, timeouts | pool size comparison runs |
+| 2026-04-28 | ~Xh | M1 S4 | pool size experiments, Little's Law, F-03 | — |
