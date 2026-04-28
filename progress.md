@@ -2,9 +2,9 @@
 
 Current Position:
 Module: 1
-Stage: 5 — AWS native
+Stage: 6 — Cost check + teardown  
 Last session: 2026-04-28
-Next action: Deploy to EC2 + RDS, run k6 from outside AWS, compare p99 to local
+Next action: Check Cost Explorer for zero charges, then cover graceful shutdown + idempotency, then Stage 7 postmortem
 
 **Open questions / things I'm stuck on:**
 - _(blank to start)_
@@ -106,7 +106,7 @@ Next action: Deploy to EC2 + RDS, run k6 from outside AWS, compare p99 to local
 
 | Date | Module | Services used | Hours active | Cost (USD) | Notes |
 |------|--------|---------------|--------------|------------|-------|
-| _ex: 2026-05-12_ | _1_ | _t3.micro, db.t3.micro_ | _3h_ | _$0.18_ | _Forgot to delete EBS volume, +$0.40 next morning_ |
+| 2026-04-28 | 1 | EC2 t3.micro x2, RDS db.t3.micro | 2h | ~$0.12 | k6 EC2 + app EC2 + RDS, Mumbai region |
 
 **Running total:** $0.00
 
@@ -122,7 +122,7 @@ Next action: Deploy to EC2 + RDS, run k6 from outside AWS, compare p99 to local
 ### Module 1
 - [x] Throughput vs latency (and why p99 ≠ p50 × constant)
 - [x] Little's Law in plain English
-- [ ] Why every connection pool size is a guess that needs validation
+- [x] Why every connection pool size is a guess that needs validation
 - [ ] What backpressure is and where it lives in your stack
 - [ ] Why graceful shutdown is non-negotiable
 - [ ] Idempotency — and the request that taught you why
@@ -209,4 +209,4 @@ Next action: Deploy to EC2 + RDS, run k6 from outside AWS, compare p99 to local
 | Date | Duration | Module/Stage | What I shipped | What I'm avoiding |
 |------|----------|--------------|----------------|-------------------|
 | 2026-04-28 | 4 | M1 S1→S4 | k6 load tests, EXPLAIN ANALYZE, ON CONFLICT upsert, timeouts | pool size comparison runs |
-| 2026-04-28 | ~Xh | M1 S4 | pool size experiments, Little's Law, F-03 | — |
+| 2026-04-28 | ~Xh | M1 S4 | pool size experiments, Little's Law, F-03,EC2+RDS deploy, k6 from AWS, teardown | graceful shutdown, idempotency |
