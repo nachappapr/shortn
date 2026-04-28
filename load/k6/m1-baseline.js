@@ -42,5 +42,5 @@ export default function () {
     check(res, { 'redirect 30x or 404': (r) => r.status === 301 || r.status === 302 || r.status === 404 });
   }
 
-  sleep(0.1);
+  // sleep(0.1);
 }

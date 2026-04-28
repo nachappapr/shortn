@@ -1,9 +1,10 @@
 ## Current Position
 
-**Module:** 1 — Single Box
-**Stage:** 4 — Break the fix
-**Last session:** 2026-04-28
-**Next action:** Restart Node between pool size runs, confirm pool size with pg_stat_activity, complete max:2 / max:10 / max:50 comparison
+Current Position:
+Module: 1
+Stage: 5 — AWS native
+Last session: 2026-04-28
+Next action: Deploy to EC2 + RDS, run k6 from outside AWS, compare p99 to local
 
 **Open questions / things I'm stuck on:**
 - _(blank to start)_
@@ -88,6 +89,14 @@
 - **Fix:** configure query timeout in pg pool so app fails in 2s, not 15s
 - **What I'd watch for in production:** p99 spikes to 15s during DB restarts 
   or network blips — that's the tell
+
+### F-03: Pool size vs throughput tradeoff
+- **Module/Stage:** M1 S4
+- **What I did:** ran k6 at 1000 VUs without sleep, compared pool max:2 / max:10 / max:50
+- **What broke:** pool max:2 → avg 47ms, 11k RPS. Pool max:50 → p99 68ms despite higher RPS. No single size was obviously "right"
+- **Root cause in one sentence:** when the pool is exhausted, requests queue in Node and wait for a free connection — the optimal pool size depends on Postgres capacity, not just request volume
+- **Fix:** use the formula `(max_connections - reserved_for_other_services) / num_app_instances` to derive a per-instance pool ceiling, then validate with pg_stat_activity under load
+- **What I'd watch for in production:** active connection ratio vs pool max — alert when active connections exceed 80% of pool size sustained; also watch Node's internal queue length, not just DB metrics
 
 ---
 
