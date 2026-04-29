@@ -1,9 +1,9 @@
 ## Current Position
 
 Current Position:
-Module: 1
-Stage: 7 — Postmortem  
-Last session: 2026-04-29
+Module: 2
+Stage: 0 — Start  
+Last session: 2026-04-30
 Next action: Start Module 2
 
 **Open questions / things I'm stuck on:**
@@ -196,4 +196,5 @@ Next action: Start Module 2
 | 2026-04-28 | 4 | M1 S1→S4 | k6 load tests, EXPLAIN ANALYZE, ON CONFLICT upsert, timeouts | pool size comparison runs |
 | 2026-04-28 | 3 | M1 S4 | pool size experiments, Little's Law, F-03, EC2+RDS deploy, k6 from AWS, teardown | — |
 | 2026-04-29 | 30m | M1 S6 | backpressure, idempotency, graceful shutdown verification, cost check ($0.11) | postmortem |
+| 2026-04-30 | 30m | M1 S7 | postmortem review, progress.md cleanup, M1 closed | — |
 
