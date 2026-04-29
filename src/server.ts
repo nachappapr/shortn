@@ -54,6 +54,26 @@ app.get("/:code", async (req, res) => {
   }
 });
 
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
+});
+
+process.on("SIGTERM", () => {
+  console.log(
+    JSON.stringify({ event: "shutdown_initiated", signal: "SIGTERM" }),
+  );
+  server.close(() => {
+    console.log(JSON.stringify({ event: "http_server_closed" }));
+    pool.end(() => {
+      console.log(JSON.stringify({ event: "pool_closed" }));
+      process.exit(0);
+    });
+  });
+
+  setTimeout(() => {
+    console.error(
+      "Could not close connections in time, forcefully shutting down",
+    );
+    process.exit(1);
+  }, 10000).unref();
 });

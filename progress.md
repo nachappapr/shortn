@@ -2,9 +2,9 @@
 
 Current Position:
 Module: 1
-Stage: 6 — Cost check + teardown  
-Last session: 2026-04-28
-Next action: Check Cost Explorer for zero charges, then cover graceful shutdown + idempotency, then Stage 7 postmortem
+Stage: 7 — Postmortem  
+Last session: 2026-04-29
+Next action: Start Module 2
 
 **Open questions / things I'm stuck on:**
 - _(blank to start)_
@@ -15,7 +15,7 @@ Next action: Check Cost Explorer for zero charges, then cover graceful shutdown 
 
 | # | Module | Status | Started | Finished | Notes |
 |---|--------|--------|---------|----------|-------|
-| 1 | Single Box | 🟡 In progress | 2026-04-27 | — | — |
+| 1 | Single Box | ✅ Done | 2026-04-27 | 2026-04-29 | — |
 | 2 | API Design | ⬜ | — | — | — |
 | 3 | Caching | ⬜ | — | — | — |
 | 4 | Horizontal Scale | ⬜ | — | — | — |
@@ -57,21 +57,6 @@ Next action: Check Cost Explorer for zero charges, then cover graceful shutdown 
 - **What I'd watch for in production:**
 ```
 
-### Example (delete once you have your own)
-
-```
-### F-01: Connection pool exhaustion under load
-- **Module/Stage:** M1 S1
-- **What I did:** k6 ramp to 1000 RPS against single Node + Postgres
-- **What broke:** p99 went from 8ms to 4200ms at ~600 RPS, then 503s
-- **Root cause in one sentence:** No pool configured — pg client opened a fresh
-  connection per request, Postgres hit max_connections, new requests queued in Node
-  until upstream timeout.
-- **Fix:** pg.Pool with max=20, idleTimeoutMillis=30000
-- **What I'd watch for in production:** active_connections vs pool_size as a
-  ratio metric; alert at >80%. Also: queue length in app, not just DB.
-```
-
 ### F-01: Duplicate key collision under load
 - **Module/Stage:** M1 S1
 - **What I did:** ran k6 at 1000 VUs with randomBytes(4) code generation
@@ -106,9 +91,9 @@ Next action: Check Cost Explorer for zero charges, then cover graceful shutdown 
 
 | Date | Module | Services used | Hours active | Cost (USD) | Notes |
 |------|--------|---------------|--------------|------------|-------|
-| 2026-04-28 | 1 | EC2 t3.micro x2, RDS db.t3.micro | 2h | ~$0.12 | k6 EC2 + app EC2 + RDS, Mumbai region |
+| 2026-04-28 | 1 | RDS db.t3.micro, EC2 t3.micro x2, VPC, EC2-Other | 2h | $0.11 | RDS $0.06, EC2 $0.03, VPC $0.01, EC2-Other $0.01 — Mumbai region |
 
-**Running total:** $0.00
+**Running total:** $0.11
 
 **Cost surprises** (things that cost more than I expected — review before starting next module):
 - _(blank to start)_
@@ -123,9 +108,9 @@ Next action: Check Cost Explorer for zero charges, then cover graceful shutdown 
 - [x] Throughput vs latency (and why p99 ≠ p50 × constant)
 - [x] Little's Law in plain English
 - [x] Why every connection pool size is a guess that needs validation
-- [ ] What backpressure is and where it lives in your stack
-- [ ] Why graceful shutdown is non-negotiable
-- [ ] Idempotency — and the request that taught you why
+- [x] What backpressure is and where it lives in your stack
+- [x] Why graceful shutdown is non-negotiable
+- [x] Idempotency — and the request that taught you why
 
 ### Module 2
 - [ ] Why offset pagination dies on large tables
@@ -186,7 +171,7 @@ Next action: Check Cost Explorer for zero charges, then cover graceful shutdown 
 
 > One per module, written by you (not Claude) at Stage 7. Keep them in `/postmortems/MN-postmortem.md` and link here.
 
-- M1: _link when written_
+- M1: [M1-postmortem.md](postmortems/M1-postmortem.md)
 - M2: _link when written_
 - ... etc
 
@@ -209,4 +194,6 @@ Next action: Check Cost Explorer for zero charges, then cover graceful shutdown 
 | Date | Duration | Module/Stage | What I shipped | What I'm avoiding |
 |------|----------|--------------|----------------|-------------------|
 | 2026-04-28 | 4 | M1 S1→S4 | k6 load tests, EXPLAIN ANALYZE, ON CONFLICT upsert, timeouts | pool size comparison runs |
-| 2026-04-28 | ~Xh | M1 S4 | pool size experiments, Little's Law, F-03,EC2+RDS deploy, k6 from AWS, teardown | graceful shutdown, idempotency |
+| 2026-04-28 | 3 | M1 S4 | pool size experiments, Little's Law, F-03, EC2+RDS deploy, k6 from AWS, teardown | — |
+| 2026-04-29 | 30m | M1 S6 | backpressure, idempotency, graceful shutdown verification, cost check ($0.11) | postmortem |
+
