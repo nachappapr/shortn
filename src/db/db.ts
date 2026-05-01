@@ -3,12 +3,12 @@ import { Pool } from "pg";
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  max: 50,
+  max: 10,
   query_timeout: 5000,
   connectionTimeoutMillis: 2000,
-  ssl: {
-    rejectUnauthorized: false,
-  },
+  // ssl: {
+  //   rejectUnauthorized: false,
+  // },
 });
 
 pool.on("error", (err) => {

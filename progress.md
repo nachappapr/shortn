@@ -2,9 +2,9 @@
 
 Current Position:
 Module: 2
-Stage: 0 — Start  
-Last session: 2026-04-30
-Next action: Start Module 2
+Stage: 3 — Pagination done, idempotency keys next
+Last session: 2026-05-01
+Next action: Implement idempotency keys on POST /v1/urls
 
 **Open questions / things I'm stuck on:**
 - _(blank to start)_
@@ -16,7 +16,7 @@ Next action: Start Module 2
 | # | Module | Status | Started | Finished | Notes |
 |---|--------|--------|---------|----------|-------|
 | 1 | Single Box | ✅ Done | 2026-04-27 | 2026-04-29 | — |
-| 2 | API Design | ⬜ | — | — | — |
+| 2 | API Design | 🟡 In progress | 2026-05-01 | — | — |
 | 3 | Caching | ⬜ | — | — | — |
 | 4 | Horizontal Scale | ⬜ | — | — | — |
 | 5 | Async Work | ⬜ | — | — | — |
@@ -37,6 +37,9 @@ Next action: Start Module 2
 | Date | Module | Decision | Why | Tradeoff accepted |
 |------|--------|----------|-----|-------------------|
 | 2026-04-27 | 1 | Code length = 12 hex chars (randomBytes(6)) | 4 bytes caused duplicate key collisions at 3300 RPS — birthday problem | Longer URLs (12 chars vs 8), but 281 trillion possibilities makes collision negligible |
+| 2026-05-01 | 2 | Cursor pagination over offset for list endpoints | Offset scans all preceding rows — gets slower with depth | No arbitrary page jumps, no total page count |
+| 2026-05-01 | 2 | Client-generated idempotency keys | Server can't generate the key — it has to respond first, but the problem is the response never arrived | Keys expire after 24h, adds storage overhead for key+result |
+| 2026-05-01 | 2 | Base64 encode cursor id | Hides internal DB sequence from clients | Trivial to decode, but raises the bar for casual snooping |
 ---
 
 ## Failure Catalog
@@ -113,9 +116,9 @@ Next action: Start Module 2
 - [x] Idempotency — and the request that taught you why
 
 ### Module 2
-- [ ] Why offset pagination dies on large tables
-- [ ] When gRPC is right and when it's resume-driven design
-- [ ] Idempotency keys — why client-generated, not server-generated
+- [x] Why offset pagination dies on large tables
+- [x] When gRPC is right and when it's resume-driven design
+- [x] Idempotency keys — why client-generated, not server-generated
 - [ ] The async API pattern (202 → poll / webhook) and when each fits
 
 ### Module 3
@@ -197,4 +200,5 @@ Next action: Start Module 2
 | 2026-04-28 | 3 | M1 S4 | pool size experiments, Little's Law, F-03, EC2+RDS deploy, k6 from AWS, teardown | — |
 | 2026-04-29 | 30m | M1 S6 | backpressure, idempotency, graceful shutdown verification, cost check ($0.11) | postmortem |
 | 2026-04-30 | 30m | M1 S7 | postmortem review, progress.md cleanup, M1 closed | — |
+| 2026-05-01 | ~Xh | M2 S0→S3 | Audited M1 API, restructured into routes/controllers/services, error envelope, 404 handler, cursor pagination | idempotency keys |
 

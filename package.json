@@ -8,7 +8,7 @@
     "dev": "tsx watch src/server.ts",
     "build": "tsc",
     "start": "node src/server.js",
-    "k6":"k6 run -e BASE_URL=http://localhost:3000 load/k6/m1-baseline.js"
+    "k6": "k6 run -e BASE_URL=http://localhost:3000 load/k6/m1-baseline.js"
   },
   "engines": {
     "node": ">=20"
@@ -25,6 +25,7 @@
   "dependencies": {
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
-    "pg": "^8.20.0"
+    "pg": "^8.20.0",
+    "zod": "^4.4.1"
   }
 }
