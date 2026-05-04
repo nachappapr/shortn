@@ -16,7 +16,7 @@ export async function createShortUrl(
 
   try {
     const result = await saveShortUrl(url);
-    res.status(200).json({
+    res.status(201).json({
       shorten_url: new URL(`/${result.code}`, process.env.PUBLIC_BASE_URL).href,
     });
   } catch (err) {

@@ -10,10 +10,16 @@ import {
   GetAllUrlsSchema,
   GetUrlSchema,
 } from "../schema/urls.js";
+import { idempotencyMiddleware } from "../middleware/idempotency.middleware.js";
 
 const router: ExpressRouter = Router();
 
-router.post("/shorten", validateSchema(createUrlSchema), createShortUrl);
+router.post(
+  "/shorten",
+  validateSchema(createUrlSchema),
+  idempotencyMiddleware,
+  createShortUrl,
+);
 router.get("/urls", validateSchema(GetAllUrlsSchema), getAllUrls);
 router.get("/:code", validateSchema(GetUrlSchema), redirectToOriginalUrl);
 

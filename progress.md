@@ -2,9 +2,9 @@
 
 Current Position:
 Module: 2
-Stage: 3 — Pagination done, idempotency keys next
-Last session: 2026-05-01
-Next action: Implement idempotency keys on POST /v1/urls
+Stage: 4 — Async API (bulk shorten timeout)
+Last session: 2026-05-04
+Next action: Build POST /v1/urls/bulk — shorten 10k URLs in one request, watch it timeout
 
 **Open questions / things I'm stuck on:**
 - _(blank to start)_
@@ -38,8 +38,13 @@ Next action: Implement idempotency keys on POST /v1/urls
 |------|--------|----------|-----|-------------------|
 | 2026-04-27 | 1 | Code length = 12 hex chars (randomBytes(6)) | 4 bytes caused duplicate key collisions at 3300 RPS — birthday problem | Longer URLs (12 chars vs 8), but 281 trillion possibilities makes collision negligible |
 | 2026-05-01 | 2 | Cursor pagination over offset for list endpoints | Offset scans all preceding rows — gets slower with depth | No arbitrary page jumps, no total page count |
-| 2026-05-01 | 2 | Client-generated idempotency keys | Server can't generate the key — it has to respond first, but the problem is the response never arrived | Keys expire after 24h, adds storage overhead for key+result |
+| 2026-05-01 | 2 | Client-generated idempotency keys | he failure mode we're protecting against is "response never arrived" — a server-generated key only exists in that response, so if the response is lost the key is lost with it and the retry looks like a fresh request. The key must exist before the request is sent | clients have to know to generate and send the key (UUIDv4 in a header); we can't protect clients that don't participate. |
 | 2026-05-01 | 2 | Base64 encode cursor id | Hides internal DB sequence from clients | Trivial to decode, but raises the bar for casual snooping |
+| 2026-05-04 | 2 | separate idempotency_keys table, not a column on urls | idempotency replays the response, including for requests that don't create a resource (validation failures, 4xx, etc.) — coupling to urls means you can only remember successes | extra table, extra write per POST, response body stored verbatim. |
+| 2026-05-04 | 2 | on idempotency key reuse with mismatched request body, return 422 Unprocessable (Stripe-style), not silent replay | silent replay hides client bugs; a key reused with a different payload is always a client error and should fail loudly | requires storing a request body hash on every idempotent write; clients that genuinely want to "change their mind" must use a new key (which is the correct semantic anyway). |
+| 2026-05-04 | 2 | advisory lock (Pattern B) over insert-first (Pattern A) for idempotency concurrency control | avoids extra INSERT + UPDATE round trip; single transaction wrapping both urls and idempotency_keys inserts is atomic — crash rolls back both, no orphaned rows. Advisory lock tied to connection, auto-released on death | lock key must be derived deterministically from (user_id, endpoint, key) — need a stable hash function for it.|
+
+
 ---
 
 ## Failure Catalog
@@ -201,4 +206,5 @@ Next action: Implement idempotency keys on POST /v1/urls
 | 2026-04-29 | 30m | M1 S6 | backpressure, idempotency, graceful shutdown verification, cost check ($0.11) | postmortem |
 | 2026-04-30 | 30m | M1 S7 | postmortem review, progress.md cleanup, M1 closed | — |
 | 2026-05-01 | ~Xh | M2 S0→S3 | Audited M1 API, restructured into routes/controllers/services, error envelope, 404 handler, cursor pagination | idempotency keys |
+| 2026-05-04 | ~Xh | M2 S3 | idempotency keys — migration, middleware, advisory lock, race condition test | — |
 
