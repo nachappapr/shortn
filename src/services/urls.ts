@@ -60,3 +60,71 @@ export async function fetchAllUrls(
     hasMore,
   };
 }
+
+export async function createBatchInsertJob(): Promise<number> {
+  const result = await pool.query(
+    `INSERT INTO bulk_jobs (status) VALUES ($1) RETURNING id`,
+    ["pending"],
+  );
+  return result.rows[0].id;
+}
+
+export async function processBatchInsertJob(
+  jobId: number,
+  urls: string[],
+): Promise<void> {
+  const client = await pool.connect();
+  let successCount = 0;
+  let failedCount = 0;
+
+  try {
+    await client.query("BEGIN");
+
+    await client.query(`UPDATE bulk_jobs SET status = $1 WHERE id = $2`, [
+      "processing",
+      jobId,
+    ]);
+
+    for (const url of urls) {
+      try {
+        await client.query("SAVEPOINT sp");
+        const result = await client.query(
+          `INSERT INTO urls (code, original_url) VALUES ($1, $2) ON CONFLICT (original_url) DO UPDATE SET updated_at = NOW() RETURNING *`,
+          [randomBytes(6).toString("hex"), url],
+        );
+        await client.query(
+          `INSERT INTO bulk_job_results (job_id, url_id, status, original_url) VALUES ($1, $2, $3, $4)`,
+          [jobId, result?.rows[0]?.id, "success", url],
+        );
+        await client.query("RELEASE SAVEPOINT sp");
+        successCount++;
+      } catch (error) {
+        await client.query("ROLLBACK TO SAVEPOINT sp");
+        await client.query(
+          `INSERT INTO bulk_job_results (job_id, url_id, status, original_url) VALUES ($1, $2, $3, $4)`,
+          [jobId, null, "failed", url],
+        );
+        failedCount++;
+      }
+    }
+    let finalStatus: string;
+    if (failedCount === 0) {
+      finalStatus = "completed";
+    } else if (successCount === 0) {
+      finalStatus = "failed";
+    } else {
+      finalStatus = "partial";
+    }
+    await client.query(`UPDATE bulk_jobs SET status = $1 WHERE id = $2`, [
+      finalStatus,
+      jobId,
+    ]);
+
+    await client.query("COMMIT");
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
+  }
+}

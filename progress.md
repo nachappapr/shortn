@@ -2,9 +2,9 @@
 
 Current Position:
 Module: 2
-Stage: 4 — Async API (bulk shorten timeout)
-Last session: 2026-05-04
-Next action: Build POST /v1/urls/bulk — shorten 10k URLs in one request, watch it timeout
+Stage: 4 — Async API (polling endpoint + webhooks)
+Last session: 2026-05-05
+Next action: Build GET /v1/shorten/batch/:jobId polling endpoint, then webhooks
 
 **Open questions / things I'm stuck on:**
 - _(blank to start)_
@@ -43,6 +43,11 @@ Next action: Build POST /v1/urls/bulk — shorten 10k URLs in one request, watch
 | 2026-05-04 | 2 | separate idempotency_keys table, not a column on urls | idempotency replays the response, including for requests that don't create a resource (validation failures, 4xx, etc.) — coupling to urls means you can only remember successes | extra table, extra write per POST, response body stored verbatim. |
 | 2026-05-04 | 2 | on idempotency key reuse with mismatched request body, return 422 Unprocessable (Stripe-style), not silent replay | silent replay hides client bugs; a key reused with a different payload is always a client error and should fail loudly | requires storing a request body hash on every idempotent write; clients that genuinely want to "change their mind" must use a new key (which is the correct semantic anyway). |
 | 2026-05-04 | 2 | advisory lock (Pattern B) over insert-first (Pattern A) for idempotency concurrency control | avoids extra INSERT + UPDATE round trip; single transaction wrapping both urls and idempotency_keys inserts is atomic — crash rolls back both, no orphaned rows. Advisory lock tied to connection, auto-released on death | lock key must be derived deterministically from (user_id, endpoint, key) — need a stable hash function for it.|
+| 2026-05-05 | 2 | or async bulk endpoints, idempotency replay stores only the 202 response (job ID + status), not the full result body | result body is too large and clients poll for results anyway. | client must use the job ID to get actual results, can't get them from a replay alone. |
+| 2026-05-05 | 2 | row-by-row insert in processJob over bulk insert | need per-row failure tracking in bulk_job_results. | slower (N round trips), but partial failures are visible to the client. Chunking deferred as optimization. |
+| 2026-05-05 | 2 | Savepoints for per-URL error isolation inside outer transaction | without a savepoint, one bad URL aborts the entire batch transaction — savepoints let a per-row INSERT fail and roll back only that row while the outer transaction continues | savepoints add a round trip per row; if the batch is huge this compounds the N-round-trips cost already accepted in the row-by-row decision |
+| 2026-05-05 | 2 | bulk_job_results stores original_url for failed rows instead of null url_id | failed rows have no url_id (the INSERT never committed), so storing NULL would lose the identity of what failed — original_url is the only stable identifier the client gave us | duplicates data already in the request body, but it's the only way to return meaningful per-row error detail to the caller |
+| 2026-05-05 | 2 | Job terminal states: completed = all rows succeeded, partial = at least one row failed but at least one succeeded, failed = all rows failed | three states let the client distinguish "retry the whole job" (failed) from "cherry-pick failures" (partial) from "nothing to do" (completed) — a binary success/failure collapses that signal | more states mean more code paths in the client; partial is the one most clients forget to handle |
 
 
 ---
@@ -90,6 +95,23 @@ Next action: Build POST /v1/urls/bulk — shorten 10k URLs in one request, watch
 - **Root cause in one sentence:** when the pool is exhausted, requests queue in Node and wait for a free connection — the optimal pool size depends on Postgres capacity, not just request volume
 - **Fix:** use the formula `(max_connections - reserved_for_other_services) / num_app_instances` to derive a per-instance pool ceiling, then validate with pg_stat_activity under load
 - **What I'd watch for in production:** active connection ratio vs pool max — alert when active connections exceed 80% of pool size sustained; also watch Node's internal queue length, not just DB metrics
+
+### F-04: Request entity too large (body parser limit)
+- **Module/Stage:** M2 S4
+- **What I did:** sent a bulk shorten request with a payload large enough to exceed Express's default body-parser limit
+- **What broke:** Express rejected the request with 413 Payload Too Large before it reached any route handler
+- **Root cause in one sentence:** Express body-parser defaults to 100kb; a bulk array of URLs blows past that limit silently from the client's perspective
+- **Fix:** raise the `limit` option on `express.json()` to a value appropriate for the max batch size, or cap batch size in validation before the body is parsed
+- **What I'd watch for in production:** 413s on bulk endpoints with no corresponding server-side business logic error — the request never made it in
+
+### F-05: Client timeout with server still processing
+- **Module/Stage:** M2 S4
+- **What I did:** sent a synchronous bulk shorten request with a large batch; client timeout fired before the server finished
+- **What broke:** client received a timeout error, but the server kept processing and committed work the client never saw — result was lost or ambiguous
+- **Root cause in one sentence:** long-running synchronous work violates the HTTP request/response contract — the client cannot wait indefinitely, but the server has no way to report partial progress mid-request
+- **Fix:** move bulk processing behind an async job pattern (202 Accepted + polling), so the HTTP round trip is just "job accepted," not "job done"
+- **What I'd watch for in production:** client-reported timeouts that don't correlate with server errors — the work is completing successfully, it's just invisible to the caller
+
 
 ---
 
@@ -207,4 +229,4 @@ Next action: Build POST /v1/urls/bulk — shorten 10k URLs in one request, watch
 | 2026-04-30 | 30m | M1 S7 | postmortem review, progress.md cleanup, M1 closed | — |
 | 2026-05-01 | ~Xh | M2 S0→S3 | Audited M1 API, restructured into routes/controllers/services, error envelope, 404 handler, cursor pagination | idempotency keys |
 | 2026-05-04 | ~Xh | M2 S3 | idempotency keys — migration, middleware, advisory lock, race condition test | — |
-
+| 2026-05-06 | ~Xh | M2 S4 | processBatchInsertJob with savepoints, bulk_job_results schema, partial/failed/completed states | polling endpoint, webhooks |

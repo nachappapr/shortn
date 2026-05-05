@@ -1,11 +1,19 @@
 import { NextFunction, Request, Response } from "express";
 import { AppError } from "../errors/app.error.js";
-import { CreateUrl, GetAllUrls, GetUrl } from "../schema/urls.js";
 import {
+  CreateBatchUrl,
+  CreateUrl,
+  GetAllUrls,
+  GetUrl,
+} from "../schema/urls.js";
+import {
+  createBatchInsertJob,
   fetchAllUrls,
   fetchOriginalUrl,
+  processBatchInsertJob,
   saveShortUrl,
 } from "../services/urls.js";
+import pool from "../db/db.js";
 
 export async function createShortUrl(
   req: Request<Record<string, string>, unknown, CreateUrl>,
@@ -21,6 +29,28 @@ export async function createShortUrl(
     });
   } catch (err) {
     console.error("Error inserting URL:", err);
+    next(new AppError("Internal Server Error", 500, "INTERNAL_ERROR"));
+  }
+}
+
+export async function createBatchShortUrl(
+  req: Request<Record<string, string>, unknown, CreateBatchUrl>,
+  res: Response,
+  next: NextFunction,
+) {
+  const { urls } = req.body;
+
+  try {
+    const jobId = await createBatchInsertJob();
+    processBatchInsertJob(
+      jobId,
+      urls.map((u) => u.url),
+    ).catch((err) => {
+      console.error("Error processing batch insert job:", err);
+    });
+    res.status(202).json({ jobId });
+  } catch (err) {
+    console.error("Error inserting URLs:", err);
     next(new AppError("Internal Server Error", 500, "INTERNAL_ERROR"));
   }
 }
