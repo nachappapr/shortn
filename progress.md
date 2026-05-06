@@ -2,12 +2,13 @@
 
 Current Position:
 Module: 2
-Stage: 4 — Async API (polling endpoint + webhooks)
-Last session: 2026-05-05
-Next action: Build GET /v1/shorten/batch/:jobId polling endpoint, then webhooks
+Stage: 4 — webhooks retry testing pending
+Last session: 2026-05-07
+Next action: Test webhook retries with local 500 server, then close Stage 4
 
 **Open questions / things I'm stuck on:**
-- _(blank to start)_
+- Known gap: stuck job reaper not implemented — jobs that crash mid-processing 
+  stay in pending/processing forever. Needs a cron in production.
 
 ---
 
@@ -48,6 +49,8 @@ Next action: Build GET /v1/shorten/batch/:jobId polling endpoint, then webhooks
 | 2026-05-05 | 2 | Savepoints for per-URL error isolation inside outer transaction | without a savepoint, one bad URL aborts the entire batch transaction — savepoints let a per-row INSERT fail and roll back only that row while the outer transaction continues | savepoints add a round trip per row; if the batch is huge this compounds the N-round-trips cost already accepted in the row-by-row decision |
 | 2026-05-05 | 2 | bulk_job_results stores original_url for failed rows instead of null url_id | failed rows have no url_id (the INSERT never committed), so storing NULL would lose the identity of what failed — original_url is the only stable identifier the client gave us | duplicates data already in the request body, but it's the only way to return meaningful per-row error detail to the caller |
 | 2026-05-05 | 2 | Job terminal states: completed = all rows succeeded, partial = at least one row failed but at least one succeeded, failed = all rows failed | three states let the client distinguish "retry the whole job" (failed) from "cherry-pick failures" (partial) from "nothing to do" (completed) — a binary success/failure collapses that signal | more states mean more code paths in the client; partial is the one most clients forget to handle |
+| 2026-05-06 | 2 | webhook delivery outside the database transaction | Firing the webhook inside an open transaction holds a DB connection for the full HTTP round-trip to the subscriber — potentially seconds. This exhausts the connection pool under load and couples transaction success to external HTTP availability: a slow or failing webhook would roll back the URL creation. | Commit can succeed but webhook delivery fails (network drop, subscriber down, process crash between commit and send) — the URL exists but the subscriber is never notified. Requires a retry mechanism (outbox pattern, job queue) for at-least-once guarantees. |
+
 
 
 ---
@@ -146,7 +149,7 @@ Next action: Build GET /v1/shorten/batch/:jobId polling endpoint, then webhooks
 - [x] Why offset pagination dies on large tables
 - [x] When gRPC is right and when it's resume-driven design
 - [x] Idempotency keys — why client-generated, not server-generated
-- [ ] The async API pattern (202 → poll / webhook) and when each fits
+- [x] The async API pattern (202 → poll / webhook) and when each fits
 
 ### Module 3
 - [ ] Cache-aside vs write-through — when each makes sense
@@ -230,3 +233,4 @@ Next action: Build GET /v1/shorten/batch/:jobId polling endpoint, then webhooks
 | 2026-05-01 | ~Xh | M2 S0→S3 | Audited M1 API, restructured into routes/controllers/services, error envelope, 404 handler, cursor pagination | idempotency keys |
 | 2026-05-04 | ~Xh | M2 S3 | idempotency keys — migration, middleware, advisory lock, race condition test | — |
 | 2026-05-06 | ~Xh | M2 S4 | processBatchInsertJob with savepoints, bulk_job_results schema, partial/failed/completed states | polling endpoint, webhooks |
+| 2026-05-07 | ~Xh | M2 S4 | polling endpoint, webhook with retry+timeout, idempotency verified | webhook retry test (local 500 server) |

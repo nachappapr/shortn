@@ -16,6 +16,7 @@ export const createBatchUrlSchema = z.object({
       )
       .min(1, "At least one URL is required")
       .max(1000, "Maximum 1000 URLs allowed"),
+    webhookUrl: z.url("Invalid webhook URL format").optional(),
   }),
 });
 
@@ -37,7 +38,16 @@ export const GetAllUrlsSchema = z.object({
   }),
 });
 
+export const GetBatchJobStatusSchema = z.object({
+  params: z.object({
+    jobId: z.string("Job ID must be a string").min(1, "Job ID is required"),
+  }),
+});
+
 export type CreateUrl = z.infer<typeof createUrlSchema>["body"];
 export type CreateBatchUrl = z.infer<typeof createBatchUrlSchema>["body"];
 export type GetUrl = z.infer<typeof GetUrlSchema>["params"];
 export type GetAllUrls = z.infer<typeof GetAllUrlsSchema>["query"];
+export type GetBatchJobStatus = z.infer<
+  typeof GetBatchJobStatusSchema
+>["params"];
