@@ -2,9 +2,9 @@
 
 Current Position:
 Module: 2
-Stage: 5 — AWS-native (API Gateway)
+Stage: 5 — AWS-native, migrations incomplete
 Last session: 2026-05-07
-Next action: decide API Gateway vs ALB for shortn, deploy, compare costs
+Next action: complete migrations (0005 fix, 0006, 0007), start app, hit /health through ALB, run k6 against ALB DNS
 
 **Open questions / things I'm stuck on:**
 - Known gap: stuck job reaper not implemented — jobs that crash mid-processing 
@@ -246,3 +246,4 @@ Next action: decide API Gateway vs ALB for shortn, deploy, compare costs
 | 2026-05-04 | ~Xh | M2 S3 | idempotency keys — migration, middleware, advisory lock, race condition test | — |
 | 2026-05-06 | ~Xh | M2 S4 | processBatchInsertJob with savepoints, bulk_job_results schema, partial/failed/completed states | polling endpoint, webhooks |
 | 2026-05-07 | ~Xh | M2 S4 | polling endpoint, webhook with retry+timeout, idempotency verified, webhook retry test against local 500 server, reproduced retry storm (F-06), added full jitter to backoff | — |
+| 2026-05-07 | ~Xh | M2 S5 | ALB created, EC2 deployed, RDS provisioned, security groups wired, migrations partially applied (0001-0004 clean, 0005 partial, 0006-0007 pending) | migrations completion, k6 load test through ALB |

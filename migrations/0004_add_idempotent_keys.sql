@@ -12,6 +12,6 @@ CREATE TABLE idempotency_keys (
     response_headers JSONB,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     PRIMARY KEY (user_id, endpoint, key)
-)
+);
 
 CREATE INDEX idx_idempotency_keys ON idempotency_keys(created_at);

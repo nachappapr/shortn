@@ -16,8 +16,8 @@ CREATE TABLE bulk_job_results(
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     job_id UUID REFERENCES bulk_jobs(id) ON DELETE CASCADE,
     url_id BIGINT REFERENCES urls(id) ON DELETE CASCADE,
-    status job_result_status NOT NULL DEFAULT 'queued',
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    status job_result_status NOT NULL DEFAULT 'pending',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 ALTER TABLE bulk_job_results ADD COLUMN original_url TEXT NOT NULL;
