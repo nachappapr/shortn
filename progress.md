@@ -2,9 +2,9 @@
 
 Current Position:
 Module: 2
-Stage: 4 — webhooks retry testing pending
+Stage: 5 — AWS-native (API Gateway)
 Last session: 2026-05-07
-Next action: Test webhook retries with local 500 server, then close Stage 4
+Next action: decide API Gateway vs ALB for shortn, deploy, compare costs
 
 **Open questions / things I'm stuck on:**
 - Known gap: stuck job reaper not implemented — jobs that crash mid-processing 
@@ -50,6 +50,7 @@ Next action: Test webhook retries with local 500 server, then close Stage 4
 | 2026-05-05 | 2 | bulk_job_results stores original_url for failed rows instead of null url_id | failed rows have no url_id (the INSERT never committed), so storing NULL would lose the identity of what failed — original_url is the only stable identifier the client gave us | duplicates data already in the request body, but it's the only way to return meaningful per-row error detail to the caller |
 | 2026-05-05 | 2 | Job terminal states: completed = all rows succeeded, partial = at least one row failed but at least one succeeded, failed = all rows failed | three states let the client distinguish "retry the whole job" (failed) from "cherry-pick failures" (partial) from "nothing to do" (completed) — a binary success/failure collapses that signal | more states mean more code paths in the client; partial is the one most clients forget to handle |
 | 2026-05-06 | 2 | webhook delivery outside the database transaction | Firing the webhook inside an open transaction holds a DB connection for the full HTTP round-trip to the subscriber — potentially seconds. This exhausts the connection pool under load and couples transaction success to external HTTP availability: a slow or failing webhook would roll back the URL creation. | Commit can succeed but webhook delivery fails (network drop, subscriber down, process crash between commit and send) — the URL exists but the subscriber is never notified. Requires a retry mechanism (outbox pattern, job queue) for at-least-once guarantees. |
+| 2026-05-07 | 2 | full jitter on webhook retries (`random(0, base * 2^attempt)`) over plain exponential backoff | plain exponential backoff causes synchronized retry bursts — all deliveries that fail together retry together on every interval, flooding a recovering subscriber and potentially preventing it from recovering at all (F-06) | individual retry latency is less predictable (some retries fire earlier than the "ideal" backoff delay); acceptable because system-level recovery time is strictly better |
 
 
 
@@ -114,6 +115,17 @@ Next action: Test webhook retries with local 500 server, then close Stage 4
 - **Root cause in one sentence:** long-running synchronous work violates the HTTP request/response contract — the client cannot wait indefinitely, but the server has no way to report partial progress mid-request
 - **Fix:** move bulk processing behind an async job pattern (202 Accepted + polling), so the HTTP round trip is just "job accepted," not "job done"
 - **What I'd watch for in production:** client-reported timeouts that don't correlate with server errors — the work is completing successfully, it's just invisible to the caller
+
+
+### F-06: Retry Storm
+- **Module/Stage:** M2 S4
+- **What I did:** implemented exponential backoff for webhook delivery without adding jitter — retries used fixed intervals (`base * 2^attempt`)
+- **What broke:** when the subscriber went down and many deliveries failed at the same time, every retry timer fired in lockstep. The recovering subscriber was immediately flooded with a synchronized burst on each backoff interval instead of getting breathing room — preventing it from recovering at all
+- **Root cause in one sentence:** exponential backoff without jitter serializes retries rather than distributing them — all callers that failed together will retry together, creating repeating thundering-herd bursts
+- **Fix:** add full jitter: `base * 2^attempt * (0.5 + random * 0.5)` so each delivery picks a random point inside the backoff window; the burst spreads into a smooth drizzle even when hundreds of retries are in-flight simultaneously
+- **What I'd watch for in production:** retry queue depth spiking in rhythmic waves (rising, brief dip as the burst lands, rising again) rather than a smooth exponential decay — that oscillating pattern is the signature of synchronized retries hitting a struggling subscriber
+
+
 
 
 ---
@@ -233,4 +245,4 @@ Next action: Test webhook retries with local 500 server, then close Stage 4
 | 2026-05-01 | ~Xh | M2 S0→S3 | Audited M1 API, restructured into routes/controllers/services, error envelope, 404 handler, cursor pagination | idempotency keys |
 | 2026-05-04 | ~Xh | M2 S3 | idempotency keys — migration, middleware, advisory lock, race condition test | — |
 | 2026-05-06 | ~Xh | M2 S4 | processBatchInsertJob with savepoints, bulk_job_results schema, partial/failed/completed states | polling endpoint, webhooks |
-| 2026-05-07 | ~Xh | M2 S4 | polling endpoint, webhook with retry+timeout, idempotency verified | webhook retry test (local 500 server) |
+| 2026-05-07 | ~Xh | M2 S4 | polling endpoint, webhook with retry+timeout, idempotency verified, webhook retry test against local 500 server, reproduced retry storm (F-06), added full jitter to backoff | — |

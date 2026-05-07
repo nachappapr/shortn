@@ -10,6 +10,11 @@ const app = express();
 app.use(express.json());
 const PORT = process.env.PORT || 3000;
 
+// Health check endpoint
+app.get("/health", (req, res) => {
+  res.status(200).json({ status: "ok" });
+});
+
 // Routes
 app.use("/v1", urlRoutes);
 

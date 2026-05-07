@@ -50,7 +50,7 @@ export async function createBatchShortUrl(
   const { urls, webhookUrl } = req.body;
 
   try {
-    const jobId = await createBatchInsertJob();
+    const jobId = await createBatchInsertJob(webhookUrl);
     processBatchInsertJob(
       jobId,
       urls.map((u) => u.url),

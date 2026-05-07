@@ -67,10 +67,12 @@ export async function fetchAllUrls(
   };
 }
 
-export async function createBatchInsertJob(): Promise<string> {
+export async function createBatchInsertJob(
+  webhookUrl?: string,
+): Promise<string> {
   const result = await pool.query(
-    `INSERT INTO bulk_jobs (status) VALUES ($1) RETURNING id`,
-    ["pending"],
+    `INSERT INTO bulk_jobs (status,webhook_url) VALUES ($1, $2) RETURNING id`,
+    ["pending", webhookUrl || null],
   );
   return result.rows[0].id;
 }
@@ -103,7 +105,7 @@ async function webhookNotification(
   } catch (err) {
     if (retryCount < maxRetries) {
       retryCount++;
-      retryDelay *= 2;
+      retryDelay = retryDelay * 2 * (0.5 + Math.random()); // Exponential backoff with jitter
       await new Promise((resolve) => setTimeout(resolve, retryDelay));
       return webhookNotification(webhookUrl, payload, retryCount, retryDelay);
     }
