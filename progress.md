@@ -2,9 +2,9 @@
 
 Current Position:
 Module: 2
-Stage: 5 — AWS-native, migrations incomplete
+Stage: 5 — M2 S6 (cost check done, moving to postmortem)
 Last session: 2026-05-07
-Next action: complete migrations (0005 fix, 0006, 0007), start app, hit /health through ALB, run k6 against ALB DNS
+Next action: write M2 postmortem
 
 **Open questions / things I'm stuck on:**
 - Known gap: stuck job reaper not implemented — jobs that crash mid-processing 
@@ -51,6 +51,7 @@ Next action: complete migrations (0005 fix, 0006, 0007), start app, hit /health 
 | 2026-05-05 | 2 | Job terminal states: completed = all rows succeeded, partial = at least one row failed but at least one succeeded, failed = all rows failed | three states let the client distinguish "retry the whole job" (failed) from "cherry-pick failures" (partial) from "nothing to do" (completed) — a binary success/failure collapses that signal | more states mean more code paths in the client; partial is the one most clients forget to handle |
 | 2026-05-06 | 2 | webhook delivery outside the database transaction | Firing the webhook inside an open transaction holds a DB connection for the full HTTP round-trip to the subscriber — potentially seconds. This exhausts the connection pool under load and couples transaction success to external HTTP availability: a slow or failing webhook would roll back the URL creation. | Commit can succeed but webhook delivery fails (network drop, subscriber down, process crash between commit and send) — the URL exists but the subscriber is never notified. Requires a retry mechanism (outbox pattern, job queue) for at-least-once guarantees. |
 | 2026-05-07 | 2 | full jitter on webhook retries (`random(0, base * 2^attempt)`) over plain exponential backoff | plain exponential backoff causes synchronized retry bursts — all deliveries that fail together retry together on every interval, flooding a recovering subscriber and potentially preventing it from recovering at all (F-06) | individual retry latency is less predictable (some retries fire earlier than the "ideal" backoff delay); acceptable because system-level recovery time is strictly better |
+| 2026-05-08 | 2 | no API gateway — cross-cutting concerns handled in-app | API gateway earns its weight when many services share the same requirements (rate limiting, auth, validation) and you need a single enforcement point. With one service, the gateway adds a network hop, an extra failure domain, and operational complexity with no benefit — the same middleware runs directly in Express at negligible cost | if the service count grows or teams diverge on how they handle auth/rate-limiting, extracting to a gateway becomes the right call |
 
 
 
@@ -137,11 +138,12 @@ Next action: complete migrations (0005 fix, 0006, 0007), start app, hit /health 
 | Date | Module | Services used | Hours active | Cost (USD) | Notes |
 |------|--------|---------------|--------------|------------|-------|
 | 2026-04-28 | 1 | RDS db.t3.micro, EC2 t3.micro x2, VPC, EC2-Other | 2h | $0.11 | RDS $0.06, EC2 $0.03, VPC $0.01, EC2-Other $0.01 — Mumbai region |
+| 2026-05-08 | 2 | Route 53, EC2, RDS, VPC, Others | ~2d | $0.72 (+$0.13 tax = $0.85) | Route 53 $0.50, EC2 $0.09, RDS $0.06, VPC $0.04, Others $0.03 — ALB + load test session |
 
-**Running total:** $0.11
+**Running total:** $0.83 (excl. tax) / $0.96 (incl. tax)
 
 **Cost surprises** (things that cost more than I expected — review before starting next module):
-- _(blank to start)_
+- Route 53 $0.50 dominated M2 costs — more than EC2+RDS+VPC combined. Hosted zone fee ($0.50/month flat) dwarfs compute at this small scale.
 
 ---
 
@@ -247,3 +249,4 @@ Next action: complete migrations (0005 fix, 0006, 0007), start app, hit /health 
 | 2026-05-06 | ~Xh | M2 S4 | processBatchInsertJob with savepoints, bulk_job_results schema, partial/failed/completed states | polling endpoint, webhooks |
 | 2026-05-07 | ~Xh | M2 S4 | polling endpoint, webhook with retry+timeout, idempotency verified, webhook retry test against local 500 server, reproduced retry storm (F-06), added full jitter to backoff | — |
 | 2026-05-07 | ~Xh | M2 S5 | ALB created, EC2 deployed, RDS provisioned, security groups wired, migrations partially applied (0001-0004 clean, 0005 partial, 0006-0007 pending) | migrations completion, k6 load test through ALB |
+| 2026-05-08 | ~Xh | M2 S5 | k6 load test through ALB using m2-100-batch.js | — |

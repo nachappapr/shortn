@@ -3,7 +3,7 @@
 -- which can be useful for cursor pagination and other operations.
 
 ALTER TABLE urls
-ADD COLUMN id BIGSERIAL;
+ADD COLUMN id BIGSERIAL UNIQUE;
 
 -- Create an index on the code column to improve lookup performance
 CREATE INDEX idx_urls_id ON urls(id);
