@@ -249,4 +249,4 @@ Next action: write M2 postmortem
 | 2026-05-06 | ~Xh | M2 S4 | processBatchInsertJob with savepoints, bulk_job_results schema, partial/failed/completed states | polling endpoint, webhooks |
 | 2026-05-07 | ~Xh | M2 S4 | polling endpoint, webhook with retry+timeout, idempotency verified, webhook retry test against local 500 server, reproduced retry storm (F-06), added full jitter to backoff | — |
 | 2026-05-07 | ~Xh | M2 S5 | ALB created, EC2 deployed, RDS provisioned, security groups wired, migrations partially applied (0001-0004 clean, 0005 partial, 0006-0007 pending) | migrations completion, k6 load test through ALB |
-| 2026-05-08 | ~Xh | M2 S5 | k6 load test through ALB using m2-100-batch.js | — |
+| 2026-05-08 | ~Xh | M2 S5→S6 | migrations fixed, k6 through ALB (p95 290ms), teardown, cost logged | postmortem |
