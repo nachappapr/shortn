@@ -1,10 +1,10 @@
 ## Current Position
 
 Current Position:
-Module: 2
-Stage: 5 — M2 S6 (cost check done, moving to postmortem)
-Last session: 2026-05-07
-Next action: write M2 postmortem
+Module: 3
+Stage: 0
+Last session: 2026-05-12
+Next action:  M3 Stage 0 build
 
 **Open questions / things I'm stuck on:**
 - Known gap: stuck job reaper not implemented — jobs that crash mid-processing 
@@ -17,7 +17,7 @@ Next action: write M2 postmortem
 | # | Module | Status | Started | Finished | Notes |
 |---|--------|--------|---------|----------|-------|
 | 1 | Single Box | ✅ Done | 2026-04-27 | 2026-04-29 | — |
-| 2 | API Design | 🟡 In progress | 2026-05-01 | — | — |
+| 2 | API Design | ✅ Done | 2026-05-01 | 2026-05-12 | — |
 | 3 | Caching | ⬜ | — | — | — |
 | 4 | Horizontal Scale | ⬜ | — | — | — |
 | 5 | Async Work | ⬜ | — | — | — |
@@ -39,7 +39,7 @@ Next action: write M2 postmortem
 |------|--------|----------|-----|-------------------|
 | 2026-04-27 | 1 | Code length = 12 hex chars (randomBytes(6)) | 4 bytes caused duplicate key collisions at 3300 RPS — birthday problem | Longer URLs (12 chars vs 8), but 281 trillion possibilities makes collision negligible |
 | 2026-05-01 | 2 | Cursor pagination over offset for list endpoints | Offset scans all preceding rows — gets slower with depth | No arbitrary page jumps, no total page count |
-| 2026-05-01 | 2 | Client-generated idempotency keys | he failure mode we're protecting against is "response never arrived" — a server-generated key only exists in that response, so if the response is lost the key is lost with it and the retry looks like a fresh request. The key must exist before the request is sent | clients have to know to generate and send the key (UUIDv4 in a header); we can't protect clients that don't participate. |
+| 2026-05-01 | 2 | Client-generated idempotency keys | the failure mode we're protecting against is "response never arrived" — a server-generated key only exists in that response, so if the response is lost the key is lost with it and the retry looks like a fresh request. The key must exist before the request is sent | clients have to know to generate and send the key (UUIDv4 in a header); we can't protect clients that don't participate. |
 | 2026-05-01 | 2 | Base64 encode cursor id | Hides internal DB sequence from clients | Trivial to decode, but raises the bar for casual snooping |
 | 2026-05-04 | 2 | separate idempotency_keys table, not a column on urls | idempotency replays the response, including for requests that don't create a resource (validation failures, 4xx, etc.) — coupling to urls means you can only remember successes | extra table, extra write per POST, response body stored verbatim. |
 | 2026-05-04 | 2 | on idempotency key reuse with mismatched request body, return 422 Unprocessable (Stripe-style), not silent replay | silent replay hides client bugs; a key reused with a different payload is always a client error and should fail loudly | requires storing a request body hash on every idempotent write; clients that genuinely want to "change their mind" must use a new key (which is the correct semantic anyway). |
