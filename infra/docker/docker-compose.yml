@@ -26,6 +26,15 @@ services:
       - "5050:80"
     depends_on:
       - postgres
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
 
 volumes:
   shortn_pg_data:

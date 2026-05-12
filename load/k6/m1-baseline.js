@@ -36,14 +36,14 @@ export default function () {
   const isWrite = Math.random() < 0.2;
 
   if (isWrite) {
-    const res = http.post(`${BASE}/shorten`, JSON.stringify({
+    const res = http.post(`${BASE}/v1/shorten`, JSON.stringify({
       url: `https://example.com/${Math.random()}`,
     }), { headers: { 'Content-Type': 'application/json' } });
 
     check(res, { 'shorten 2xx': (r) => r.status >= 200 && r.status < 300 });
   } else {
     // Replace 'abc123' with a code that actually exists, or seed your DB first.
-    const res = http.get(`${BASE}/test01`, { redirects: 0 });
+    const res = http.get(`${BASE}/v1/test01`, { redirects: 0 });
     check(res, { 'redirect 30x or 404': (r) => r.status === 301 || r.status === 302 || r.status === 404 });
   }
 

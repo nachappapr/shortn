@@ -6,6 +6,7 @@ import {
   SaveShortUrlApi,
 } from "../types/url.js";
 import { AppError } from "../errors/app.error.js";
+import redis from "../db/redis.js";
 
 export async function saveShortUrl(
   originalUrl: string,
@@ -25,11 +26,39 @@ export async function saveShortUrl(
 export async function fetchOriginalUrl(
   shortCode: string,
 ): Promise<string | null> {
+  try {
+    const cached = await redis.get(shortCode);
+
+    if (cached) {
+      console.info(`Cache hit for code: ${shortCode}`);
+      return cached;
+    }
+  } catch (error) {
+    console.error("Error accessing Redis cache:", error);
+  }
+
   const result = await pool.query(
     "SELECT original_url FROM urls WHERE code = $1",
     [shortCode],
   );
-  return result.rows.length > 0 ? result.rows[0].original_url : null;
+
+  if (result.rows.length > 0) {
+    try {
+      console.info(`Cache miss for code: ${shortCode}. Caching result.`);
+      const originalUrl = result.rows[0].original_url;
+      await redis.set(
+        shortCode,
+        originalUrl,
+        "EX",
+        parseInt(process.env.URL_CACHE_TTL_SECONDS || "60", 10),
+      );
+    } catch (error) {
+      console.error("Error setting Redis cache:", error);
+    } finally {
+      return result.rows[0].original_url;
+    }
+  }
+  return null;
 }
 
 export async function fetchAllUrls(

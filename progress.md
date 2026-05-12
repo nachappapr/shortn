@@ -1,10 +1,10 @@
 ## Current Position
 
 Current Position:
-Module: 3
-Stage: 0
+Module: Module 3
+Stage: 1
 Last session: 2026-05-12
-Next action:  M3 Stage 0 build
+Next action:  Break the cache: stale data, thundering herd, hot key
 
 **Open questions / things I'm stuck on:**
 - Known gap: stuck job reaper not implemented — jobs that crash mid-processing 
@@ -18,7 +18,7 @@ Next action:  M3 Stage 0 build
 |---|--------|--------|---------|----------|-------|
 | 1 | Single Box | ✅ Done | 2026-04-27 | 2026-04-29 | — |
 | 2 | API Design | ✅ Done | 2026-05-01 | 2026-05-12 | — |
-| 3 | Caching | ⬜ | — | — | — |
+| 3 | Caching | 🟡 In progress | 2026-05-12 | — | — |
 | 4 | Horizontal Scale | ⬜ | — | — | — |
 | 5 | Async Work | ⬜ | — | — | — |
 | 6 | Data: Replication, Sharding, Migrations | ⬜ | — | — | — |
@@ -219,7 +219,7 @@ Next action:  M3 Stage 0 build
 > One per module, written by you (not Claude) at Stage 7. Keep them in `/postmortems/MN-postmortem.md` and link here.
 
 - M1: [M1-postmortem.md](postmortems/M1-postmortem.md)
-- M2: _link when written_
+- M2: [M2-postmortem.md](postmortems/M2-postmortem.md)
 - ... etc
 
 ---
@@ -250,3 +250,5 @@ Next action:  M3 Stage 0 build
 | 2026-05-07 | ~Xh | M2 S4 | polling endpoint, webhook with retry+timeout, idempotency verified, webhook retry test against local 500 server, reproduced retry storm (F-06), added full jitter to backoff | — |
 | 2026-05-07 | ~Xh | M2 S5 | ALB created, EC2 deployed, RDS provisioned, security groups wired, migrations partially applied (0001-0004 clean, 0005 partial, 0006-0007 pending) | migrations completion, k6 load test through ALB |
 | 2026-05-08 | ~Xh | M2 S5→S6 | migrations fixed, k6 through ALB (p95 290ms), teardown, cost logged | postmortem |
+| 2026-05-08 | 30m | M2 S6 | postmortem |  |
+| 2026-05-12 | Xh | M3 S0 | Added Redis cache, baseline p50 46ms → 1.24ms with cache |
