@@ -5,6 +5,7 @@ import {
   getAllUrls,
   getBatchJobStatus,
   redirectToOriginalUrl,
+  updateShortUrl,
 } from "../controller/urls.js";
 import { validateSchema } from "../middleware/validate.middleware.js";
 import {
@@ -13,6 +14,7 @@ import {
   GetAllUrlsSchema,
   GetBatchJobStatusSchema,
   GetUrlSchema,
+  UpdateUrlSchema,
 } from "../schema/urls.js";
 import { idempotencyMiddleware } from "../middleware/idempotency.middleware.js";
 
@@ -40,5 +42,9 @@ router.get(
   validateSchema(GetBatchJobStatusSchema),
   getBatchJobStatus,
 );
+
+// PUT is idempotent as it replaces the resource at the specified URL with the provided data.
+// idepotencyMiddleware is not needed for PUT requests as they are inherently idempotent.
+router.put("/shorten/:code", validateSchema(UpdateUrlSchema), updateShortUrl);
 
 export default router;

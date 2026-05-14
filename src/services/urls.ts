@@ -20,6 +20,7 @@ export async function saveShortUrl(
        RETURNING *`,
     [shortCode, originalUrl],
   );
+
   return result.rowCount && result.rows[0] ? result.rows[0] : null;
 }
 
@@ -311,4 +312,27 @@ export async function fetchBatchJobStatus(
   );
 
   return updatedResult;
+}
+
+export async function modifyShortUrl(
+  originalUrl: string,
+  shortCode: string,
+): Promise<SaveShortUrlApi | null> {
+  const result = await pool.query<SaveShortUrlApi>(
+    `UPDATE urls 
+       SET original_url = $1 
+       WHERE code = $2 
+       RETURNING *`,
+    [originalUrl, shortCode],
+  );
+
+  try {
+    if (result.rowCount && result.rows[0]) {
+      await redis.del(shortCode); // Invalidate cache for this code
+    }
+  } catch (error) {
+    console.error("Error invalidating Redis cache:", error);
+  }
+
+  return result.rowCount && result.rows[0] ? result.rows[0] : null;
 }

@@ -1,4 +1,5 @@
-import e, { NextFunction, Request, Response } from "express";
+import { NextFunction, Request, Response } from "express";
+import { DatabaseError } from "pg";
 import { AppError } from "../errors/app.error.js";
 import {
   CreateBatchUrl,
@@ -6,17 +7,18 @@ import {
   GetAllUrls,
   GetBatchJobStatus,
   GetUrl,
+  UpdateUrlBody,
+  UpdateUrlParams,
 } from "../schema/urls.js";
 import {
   createBatchInsertJob,
   fetchAllUrls,
   fetchBatchJobStatus,
   fetchOriginalUrl,
+  modifyShortUrl,
   processBatchInsertJob,
   saveShortUrl,
 } from "../services/urls.js";
-import pool from "../db/db.js";
-import { DatabaseError } from "pg";
 
 export async function createShortUrl(
   req: Request<Record<string, string>, unknown, CreateUrl>,
@@ -120,6 +122,29 @@ export async function getBatchJobStatus(
     }
 
     console.error("Error fetching batch job status:", err);
+    next(new AppError("Internal Server Error", 500, "INTERNAL_ERROR"));
+  }
+}
+
+export async function updateShortUrl(
+  req: Request<UpdateUrlParams, unknown, UpdateUrlBody>,
+  res: Response,
+  next: NextFunction,
+) {
+  const { url } = req.body;
+  const { code } = req.params;
+
+  try {
+    const result = await modifyShortUrl(url, code);
+
+    if (!result?.code) {
+      return next(new AppError("Failed to update URL", 500, "UPDATING_FAILED"));
+    }
+    res.status(200).json({
+      shorten_url: new URL(`/${result.code}`, process.env.PUBLIC_BASE_URL).href,
+    });
+  } catch (err) {
+    console.error("Error updating URL:", err);
     next(new AppError("Internal Server Error", 500, "INTERNAL_ERROR"));
   }
 }

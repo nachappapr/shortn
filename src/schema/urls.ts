@@ -44,6 +44,15 @@ export const GetBatchJobStatusSchema = z.object({
   }),
 });
 
+export const UpdateUrlSchema = z.object({
+  body: z.object({
+    url: z.url("Invalid URL format"),
+  }),
+  params: z.object({
+    code: z.string("Code must be a string").min(1, "Code is required"),
+  }),
+});
+
 export type CreateUrl = z.infer<typeof createUrlSchema>["body"];
 export type CreateBatchUrl = z.infer<typeof createBatchUrlSchema>["body"];
 export type GetUrl = z.infer<typeof GetUrlSchema>["params"];
@@ -51,3 +60,6 @@ export type GetAllUrls = z.infer<typeof GetAllUrlsSchema>["query"];
 export type GetBatchJobStatus = z.infer<
   typeof GetBatchJobStatusSchema
 >["params"];
+export type UpdateUrlParams = z.infer<typeof UpdateUrlSchema>["params"];
+export type UpdateUrlBody = z.infer<typeof UpdateUrlSchema>["body"];
+export type UpdateUrl = UpdateUrlParams & UpdateUrlBody;
