@@ -1,10 +1,10 @@
 ## Current Position
 
-Current Position: Module 3, Stage 1 — thundering herd observed and understood, single-flight fix designed but not yet implemented
+Current Position: Module 3, Stage 2
 Module: Module 3
-Stage: 1
-Last session: 2026-05-14
-Next action:  Implement single-flight lock (SET NX) in GET /:code handler, then re-run k6 + FLUSHALL to verify spike is gone
+Stage: 2
+Last session: 2026-05-20
+Next action:  Redis INFO + hit rate diagnosis — run INFO stats and INFO keyspace, understand hit_rate, then move to cache invalidation
 
 **Open questions / things I'm stuck on:**
 - Known gap: stuck job reaper not implemented — jobs that crash mid-processing 
@@ -53,6 +53,7 @@ Next action:  Implement single-flight lock (SET NX) in GET /:code handler, then 
 | 2026-05-07 | 2 | full jitter on webhook retries (`random(0, base * 2^attempt)`) over plain exponential backoff | plain exponential backoff causes synchronized retry bursts — all deliveries that fail together retry together on every interval, flooding a recovering subscriber and potentially preventing it from recovering at all (F-06) | individual retry latency is less predictable (some retries fire earlier than the "ideal" backoff delay); acceptable because system-level recovery time is strictly better |
 | 2026-05-08 | 2 | no API gateway — cross-cutting concerns handled in-app | API gateway earns its weight when many services share the same requirements (rate limiting, auth, validation) and you need a single enforcement point. With one service, the gateway adds a network hop, an extra failure domain, and operational complexity with no benefit — the same middleware runs directly in Express at negligible cost | if the service count grows or teams diverge on how they handle auth/rate-limiting, extracting to a gateway becomes the right call |
 | 2026-05-14 | 3 | Redis SETNX lock for stampede protection over in-memory Promise map | In-memory lock only works on a single process — once the service scales horizontally, each instance has its own map and all instances stampede the DB simultaneously. Redis SETNX is process-agnostic and survives scale-out without code changes | Extra round trip to Redis on every cache miss; if the lock holder crashes before releasing, the TTL must expire before other waiters can proceed — a hung process can stall reads for up to TTL seconds |
+| 2026-05-20 | 3 | On coalescing retry exhaustion, return 503 instead of falling back to DB | Two reasons: (1) if the lock holder hasn't warmed the cache before retries exhaust, it's about to — the client retry interval gives it time to land; (2) a DB fallback after all waiters have exhausted retries recreates the thundering herd at the application layer, defeating the entire lock | 503s are visible noise in client metrics and require the client to implement retries — callers that don't retry get a hard error instead of waiting transparently |
 
 
 ---
@@ -129,9 +130,9 @@ Next action:  Implement single-flight lock (SET NX) in GET /:code handler, then 
 ### F-07: Thundering herd
 - **Module/Stage:** M3 S1
 - **What I did:** Sent 1000 requests simultaneously after a cache miss by removing the cache
-- **What broke:** P99 spiked due to DB connection pool exhaustion
+- **What broke:** P99 spiked due to DB connection pool exhaustion — 4012 failures (0.47% error rate)
 - **Root cause in one sentence:** When the cache expires, every concurrent request misses simultaneously and races to query the DB, exhausting the connection pool before any response can be cached
-- **Fix:** Implement request coalescing — either an in-memory promise lock (single-flight) or a Redis NX lock — so only one request queries the DB while the rest wait and reuse the cached result
+- **Fix:** Redis SETNX coalescing lock — only one request queries the DB while the rest wait and retry until the cache is warm; on retry exhaustion return 503 (no DB fallback — see Decisions Log 2026-05-20) — result: 0 failures after fix
 - **What I'd watch for in production:** P99 spikes that correlate with TTL boundaries or cache restarts — that's the signature
 
 
@@ -261,3 +262,4 @@ Next action:  Implement single-flight lock (SET NX) in GET /:code handler, then 
 | 2026-05-08 | 30m | M2 S6 | postmortem |  |
 | 2026-05-12 | Xh | M3 S0 | Added Redis cache, baseline p50 46ms → 1.24ms with cache |
 | 2026-05-14 | Xh | M3 S1 | Reproduced thundering herd (F-07), designed single-flight fix | implementing the fix |
+| 2026-05-20 | Xh | M3 S1 | Implemented Redis SETNX coalescing lock, 503-on-retry-exhaustion pattern; 4012 failures → 0; logged F-07 final numbers and D-log entry | — |

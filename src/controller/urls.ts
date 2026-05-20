@@ -75,10 +75,20 @@ export async function redirectToOriginalUrl(
   const { code } = req.params;
   try {
     const result = await fetchOriginalUrl(code);
-    if (!result) {
+    if (!result.result) {
       return next(new AppError("URL not found", 404, "NOT_FOUND"));
     }
-    res.status(302).redirect(result);
+
+    if (result.error_type === "CACHE_RETRIEVAL_FAILED") {
+      next(
+        new AppError(
+          "Failed to retrieve URL from cache",
+          503,
+          "CACHE_RETRIEVAL_FAILED",
+        ),
+      );
+    }
+    res.status(302).redirect(result.result);
   } catch (err) {
     console.error("Error retrieving URL:", err);
     next(new AppError("Internal Server Error", 500, "INTERNAL_ERROR"));

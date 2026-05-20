@@ -24,42 +24,72 @@ export async function saveShortUrl(
   return result.rowCount && result.rows[0] ? result.rows[0] : null;
 }
 
-export async function fetchOriginalUrl(
-  shortCode: string,
-): Promise<string | null> {
-  try {
-    const cached = await redis.get(shortCode);
-
-    if (cached) {
-      console.info(`Cache hit for code: ${shortCode}`);
-      return cached;
-    }
-  } catch (error) {
-    console.error("Error accessing Redis cache:", error);
-  }
-
+async function getOriginalUrlFromDb(shortCode: string): Promise<string | null> {
   const result = await pool.query(
     "SELECT original_url FROM urls WHERE code = $1",
     [shortCode],
   );
 
-  if (result.rows.length > 0) {
-    try {
-      console.info(`Cache miss for code: ${shortCode}. Caching result.`);
-      const originalUrl = result.rows[0].original_url;
-      await redis.set(
-        shortCode,
-        originalUrl,
-        "EX",
-        parseInt(process.env.URL_CACHE_TTL_SECONDS || "60", 10),
-      );
-    } catch (error) {
-      console.error("Error setting Redis cache:", error);
-    } finally {
-      return result.rows[0].original_url;
+  return result.rows.length > 0 ? result.rows[0].original_url : null;
+}
+
+export async function fetchOriginalUrl(
+  shortCode: string,
+  retryInterval: number = 100,
+  retryCount: number = 0,
+): Promise<{ result: string | null; error_type: string | null }> {
+  const maxRetries = 3;
+
+  try {
+    const cached = await redis.get(shortCode);
+
+    if (cached) {
+      console.info(`Cache hit for code: ${shortCode}`);
+      return { result: cached, error_type: null };
+    }
+  } catch (error) {
+    console.error("Error accessing Redis cache:", error);
+  }
+
+  let accquired = await redis.set(`lock:${shortCode}`, "1", "EX", "5", "NX");
+
+  if (accquired) {
+    const result = await getOriginalUrlFromDb(shortCode);
+
+    if (result) {
+      try {
+        console.info(`Cache miss for code: ${shortCode}. Caching result.`);
+        await redis.set(
+          shortCode,
+          result,
+          "EX",
+          parseInt(process.env.URL_CACHE_TTL_SECONDS || "60", 10),
+        );
+      } catch (error) {
+        console.error("Error setting Redis cache:", error);
+      } finally {
+        await redis.del(`lock:${shortCode}`); // Release lock after caching
+        return { result, error_type: null };
+      }
+    }
+  } else {
+    if (retryCount < maxRetries) {
+      retryInterval = retryInterval * (0.5 + Math.random()); // Exponential backoff with jitter
+      await new Promise((resolve) => setTimeout(resolve, retryInterval));
+      return fetchOriginalUrl(shortCode, retryInterval, retryCount++);
+    } else {
+      const fallback = await redis.get(shortCode);
+      if (fallback) return { result: fallback, error_type: null };
+      return {
+        result: null,
+        error_type: "CACHE_RETRIEVAL_FAILED",
+      };
     }
   }
-  return null;
+  return {
+    result: null,
+    error_type: "NOT_FOUND",
+  };
 }
 
 export async function fetchAllUrls(
@@ -135,7 +165,7 @@ async function webhookNotification(
   } catch (err) {
     if (retryCount < maxRetries) {
       retryCount++;
-      retryDelay = retryDelay * 2 * (0.5 + Math.random()); // Exponential backoff with jitter
+      retryDelay = retryDelay * 2 * Math.random(); // Exponential backoff with jitter
       await new Promise((resolve) => setTimeout(resolve, retryDelay));
       return webhookNotification(webhookUrl, payload, retryCount, retryDelay);
     }
