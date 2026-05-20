@@ -4,7 +4,7 @@ Current Position: Module 3, Stage 2
 Module: Module 3
 Stage: 2
 Last session: 2026-05-20
-Next action:  Redis INFO + hit rate diagnosis — run INFO stats and INFO keyspace, understand hit_rate, then move to cache invalidation
+Next action:  Break cache invalidation — update original_url directly in Postgres, observe stale cache, then design the fix
 
 **Open questions / things I'm stuck on:**
 - Known gap: stuck job reaper not implemented — jobs that crash mid-processing 
@@ -263,3 +263,4 @@ Next action:  Redis INFO + hit rate diagnosis — run INFO stats and INFO keyspa
 | 2026-05-12 | Xh | M3 S0 | Added Redis cache, baseline p50 46ms → 1.24ms with cache |
 | 2026-05-14 | Xh | M3 S1 | Reproduced thundering herd (F-07), designed single-flight fix | implementing the fix |
 | 2026-05-20 | Xh | M3 S1 | Implemented Redis SETNX coalescing lock, 503-on-retry-exhaustion pattern; 4012 failures → 0; logged F-07 final numbers and D-log entry | — |
+| 2026-05-20 | Xh | M3 S2 | Redis INFO stats, confirmed 99.85% hit rate, proved DB called exactly once per cache miss event via application logs | — |
