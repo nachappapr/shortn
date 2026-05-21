@@ -1,10 +1,10 @@
 ## Current Position
 
-Current Position: Module 3, Stage 2
+Current Position: Module 3, Stage 3
 Module: Module 3
-Stage: 2
-Last session: 2026-05-20
-Next action:  Break cache invalidation — update original_url directly in Postgres, observe stale cache, then design the fix
+Stage: 3
+Last session: 2026-05-21
+Next action:  Redis network partition, fail open vs fail closed decision
 
 **Open questions / things I'm stuck on:**
 - Known gap: stuck job reaper not implemented — jobs that crash mid-processing 
@@ -54,6 +54,7 @@ Next action:  Break cache invalidation — update original_url directly in Postg
 | 2026-05-08 | 2 | no API gateway — cross-cutting concerns handled in-app | API gateway earns its weight when many services share the same requirements (rate limiting, auth, validation) and you need a single enforcement point. With one service, the gateway adds a network hop, an extra failure domain, and operational complexity with no benefit — the same middleware runs directly in Express at negligible cost | if the service count grows or teams diverge on how they handle auth/rate-limiting, extracting to a gateway becomes the right call |
 | 2026-05-14 | 3 | Redis SETNX lock for stampede protection over in-memory Promise map | In-memory lock only works on a single process — once the service scales horizontally, each instance has its own map and all instances stampede the DB simultaneously. Redis SETNX is process-agnostic and survives scale-out without code changes | Extra round trip to Redis on every cache miss; if the lock holder crashes before releasing, the TTL must expire before other waiters can proceed — a hung process can stall reads for up to TTL seconds |
 | 2026-05-20 | 3 | On coalescing retry exhaustion, return 503 instead of falling back to DB | Two reasons: (1) if the lock holder hasn't warmed the cache before retries exhaust, it's about to — the client retry interval gives it time to land; (2) a DB fallback after all waiters have exhausted retries recreates the thundering herd at the application layer, defeating the entire lock | 503s are visible noise in client metrics and require the client to implement retries — callers that don't retry get a hard error instead of waiting transparently |
+| 2026-05-21 | 3 | cache-aside over write-through for URL updates | write-through pays two round trips on every write (SET requires full object) and warms cache for entries that may never be read again; cache-aside only touches Redis on invalidation — DEL requires no value, no round trip to fetch the updated record | one cache miss after every update; healed on next read by the SETNX coalescing lock, so the miss never fans out to a stampede |
 
 
 ---
@@ -134,10 +135,6 @@ Next action:  Break cache invalidation — update original_url directly in Postg
 - **Root cause in one sentence:** When the cache expires, every concurrent request misses simultaneously and races to query the DB, exhausting the connection pool before any response can be cached
 - **Fix:** Redis SETNX coalescing lock — only one request queries the DB while the rest wait and retry until the cache is warm; on retry exhaustion return 503 (no DB fallback — see Decisions Log 2026-05-20) — result: 0 failures after fix
 - **What I'd watch for in production:** P99 spikes that correlate with TTL boundaries or cache restarts — that's the signature
-
-
-
-
 ---
 
 ## Cost Log
@@ -175,7 +172,7 @@ Next action:  Break cache invalidation — update original_url directly in Postg
 - [x] The async API pattern (202 → poll / webhook) and when each fits
 
 ### Module 3
-- [ ] Cache-aside vs write-through — when each makes sense
+- [x] Cache-aside vs write-through — when each makes sense
 - [x] Thundering herd — what it looks like in metrics
 - [ ] Why "fail open vs fail closed" is a product decision, not a tech one
 - [ ] Circuit breaker states (closed/open/half-open) without looking it up
