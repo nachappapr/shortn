@@ -33,6 +33,44 @@ async function getOriginalUrlFromDb(shortCode: string): Promise<string | null> {
   return result.rows.length > 0 ? result.rows[0].original_url : null;
 }
 
+async function safeRedis<T>(
+  fn: () => Promise<T>,
+): Promise<{ value: T | null; ok: boolean }> {
+  try {
+    return { value: await fn(), ok: true };
+  } catch (error) {
+    return { value: null, ok: false };
+  }
+}
+
+async function onRedisUnavailable(
+  shortCode: string,
+): Promise<{ result: string | null; error_type: string | null }> {
+  // if (percentageUsed > 80 || waitingQueueLength > 0) {
+  //   return {
+  //     result: null,
+  //     error_type: "SERVICE_UNAVAILABLE",
+  //   };
+  // }
+  try {
+    const result = await getOriginalUrlFromDb(shortCode);
+    return {
+      result,
+      error_type: result ? null : "NOT_FOUND",
+    };
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      error?.message.includes("timeout exceeded when trying to connect")
+    ) {
+      return { result: null, error_type: "SERVICE_UNAVAILABLE" };
+    } else {
+      console.error("Error retrieving URL from database:", error);
+      return { result: null, error_type: "NOT_FOUND" };
+    }
+  }
+}
+
 export async function fetchOriginalUrl(
   shortCode: string,
   retryInterval: number = 100,
@@ -40,18 +78,26 @@ export async function fetchOriginalUrl(
 ): Promise<{ result: string | null; error_type: string | null }> {
   const maxRetries = 3;
 
-  try {
-    const cached = await redis.get(shortCode);
+  // const resourceUser = pool.totalCount - pool.idleCount;
+  // const percentageUsed =
+  //   pool.totalCount > 0 ? (resourceUser / pool.totalCount) * 100 : 0;
 
-    if (cached) {
-      console.info(`Cache hit for code: ${shortCode}`);
-      return { result: cached, error_type: null };
-    }
-  } catch (error) {
-    console.error("Error accessing Redis cache:", error);
+  // console.info("waiitngQueueLength", pool.waitingCount);
+
+  const { ok: redisUp, value: cached } = await safeRedis(() =>
+    redis.get(shortCode),
+  );
+
+  if (!redisUp) return onRedisUnavailable(shortCode);
+
+  if (cached) {
+    console.info(`Cache hit for code: ${shortCode}`);
+    return { result: cached, error_type: null };
   }
 
-  let accquired = await redis.set(`lock:${shortCode}`, "1", "EX", "5", "NX");
+  const { value: accquired } = await safeRedis(() =>
+    redis.set(`lock:${shortCode}`, "1", "EX", "5", "NX"),
+  );
 
   if (accquired) {
     const result = await getOriginalUrlFromDb(shortCode);
@@ -78,12 +124,9 @@ export async function fetchOriginalUrl(
       await new Promise((resolve) => setTimeout(resolve, retryInterval));
       return fetchOriginalUrl(shortCode, retryInterval, retryCount++);
     } else {
-      const fallback = await redis.get(shortCode);
+      const { value: fallback } = await safeRedis(() => redis.get(shortCode));
       if (fallback) return { result: fallback, error_type: null };
-      return {
-        result: null,
-        error_type: "CACHE_RETRIEVAL_FAILED",
-      };
+      if (!fallback) return onRedisUnavailable(shortCode);
     }
   }
   return {

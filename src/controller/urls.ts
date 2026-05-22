@@ -88,6 +88,9 @@ export async function redirectToOriginalUrl(
         ),
       );
     }
+    if (result.error_type === "SERVICE_UNAVAILABLE") {
+      next(new AppError("Service unavailable", 503, "SERVICE_UNAVAILABLE"));
+    }
     res.status(302).redirect(result.result);
   } catch (err) {
     console.error("Error retrieving URL:", err);

@@ -1,10 +1,10 @@
 ## Current Position
 
-Current Position: Module 3, Stage 3
+Current Position: Module 3, Stage 4
 Module: Module 3
-Stage: 3
+Stage: 4
 Last session: 2026-05-21
-Next action:  Redis network partition, fail open vs fail closed decision
+Next action:  Network partition between app and Redis using tc in Docker — discover circuit breakers properly
 
 **Open questions / things I'm stuck on:**
 - Known gap: stuck job reaper not implemented — jobs that crash mid-processing 
@@ -55,6 +55,7 @@ Next action:  Redis network partition, fail open vs fail closed decision
 | 2026-05-14 | 3 | Redis SETNX lock for stampede protection over in-memory Promise map | In-memory lock only works on a single process — once the service scales horizontally, each instance has its own map and all instances stampede the DB simultaneously. Redis SETNX is process-agnostic and survives scale-out without code changes | Extra round trip to Redis on every cache miss; if the lock holder crashes before releasing, the TTL must expire before other waiters can proceed — a hung process can stall reads for up to TTL seconds |
 | 2026-05-20 | 3 | On coalescing retry exhaustion, return 503 instead of falling back to DB | Two reasons: (1) if the lock holder hasn't warmed the cache before retries exhaust, it's about to — the client retry interval gives it time to land; (2) a DB fallback after all waiters have exhausted retries recreates the thundering herd at the application layer, defeating the entire lock | 503s are visible noise in client metrics and require the client to implement retries — callers that don't retry get a hard error instead of waiting transparently |
 | 2026-05-21 | 3 | cache-aside over write-through for URL updates | write-through pays two round trips on every write (SET requires full object) and warms cache for entries that may never be read again; cache-aside only touches Redis on invalidation — DEL requires no value, no round trip to fetch the updated record | one cache miss after every update; healed on next read by the SETNX coalescing lock, so the miss never fans out to a stampede |
+| 2026-05-22 | 3 | fail open to DB when Redis is down, but return 503 when the Redis connection pool is exhausted | Two distinct failure modes, two different responses. Redis down → fail open is a product call: a URL shortener should serve reads even in degraded state. Pool exhausted → 503 is a capacity signal, not a transient blip — falling back to DB when the pool is gone bypasses all coalescing protection and recreates the thundering herd at the DB layer | Redis-down fallback adds DB load during outages; pool-exhaustion 503s are visible noise to callers and require client retries |
 
 
 ---
@@ -174,7 +175,7 @@ Next action:  Redis network partition, fail open vs fail closed decision
 ### Module 3
 - [x] Cache-aside vs write-through — when each makes sense
 - [x] Thundering herd — what it looks like in metrics
-- [ ] Why "fail open vs fail closed" is a product decision, not a tech one
+- [x] Why "fail open vs fail closed" is a product decision, not a tech one
 - [ ] Circuit breaker states (closed/open/half-open) without looking it up
 
 ### Module 4
@@ -260,4 +261,5 @@ Next action:  Redis network partition, fail open vs fail closed decision
 | 2026-05-12 | Xh | M3 S0 | Added Redis cache, baseline p50 46ms → 1.24ms with cache |
 | 2026-05-14 | Xh | M3 S1 | Reproduced thundering herd (F-07), designed single-flight fix | implementing the fix |
 | 2026-05-20 | Xh | M3 S1 | Implemented Redis SETNX coalescing lock, 503-on-retry-exhaustion pattern; 4012 failures → 0; logged F-07 final numbers and D-log entry | — |
-| 2026-05-20 | Xh | M3 S2 | Redis INFO stats, confirmed 99.85% hit rate, proved DB called exactly once per cache miss event via application logs | — |
+| 2026-05-20 | Xh | M3 S3 | Redis INFO stats, confirmed 99.85% hit rate, proved DB called exactly once per cache miss event via application logs | — |
+| 2026-05-21 | Xh | M3 S3 | Fail open with Redis pool exhaustion circuit — 503 on pool exhaustion instead of DB fallback; logged decision | — |
