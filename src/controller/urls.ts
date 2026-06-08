@@ -75,12 +75,13 @@ export async function redirectToOriginalUrl(
   const { code } = req.params;
   try {
     const result = await fetchOriginalUrl(code);
+    console.info(`Fetched original URL for code ${code}:`, result);
     if (!result.result) {
       return next(new AppError("URL not found", 404, "NOT_FOUND"));
     }
 
     if (result.error_type === "CACHE_RETRIEVAL_FAILED") {
-      next(
+      return next(
         new AppError(
           "Failed to retrieve URL from cache",
           503,
@@ -89,7 +90,9 @@ export async function redirectToOriginalUrl(
       );
     }
     if (result.error_type === "SERVICE_UNAVAILABLE") {
-      next(new AppError("Service unavailable", 503, "SERVICE_UNAVAILABLE"));
+      return next(
+        new AppError("Service unavailable", 503, "SERVICE_UNAVAILABLE"),
+      );
     }
     res.status(302).redirect(result.result);
   } catch (err) {

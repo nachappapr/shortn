@@ -6,7 +6,8 @@ import {
   SaveShortUrlApi,
 } from "../types/url.js";
 import { AppError } from "../errors/app.error.js";
-import redis from "../db/redis.js";
+import { CircuitBreakerError } from "../errors/circuit.error.js";
+import redis, { redisCircuitBreaker } from "../db/redis.js";
 
 export async function saveShortUrl(
   originalUrl: string,
@@ -35,16 +36,25 @@ async function getOriginalUrlFromDb(shortCode: string): Promise<string | null> {
 
 async function safeRedis<T>(
   fn: () => Promise<T>,
-): Promise<{ value: T | null; ok: boolean }> {
+): Promise<{ value: T | null; ok: boolean; circuitOpen: boolean }> {
   try {
-    return { value: await fn(), ok: true };
+    return {
+      value: await redisCircuitBreaker.call(fn),
+      ok: true,
+      circuitOpen: false,
+    };
   } catch (error) {
-    return { value: null, ok: false };
+    if (error instanceof CircuitBreakerError) {
+      console.warn("Circuit breaker is open. Redis is unavailable.");
+      return { value: null, ok: false, circuitOpen: true };
+    }
+    return { value: null, ok: false, circuitOpen: false };
   }
 }
 
 async function onRedisUnavailable(
   shortCode: string,
+  circuitOpen: boolean = false,
 ): Promise<{ result: string | null; error_type: string | null }> {
   // if (percentageUsed > 80 || waitingQueueLength > 0) {
   //   return {
@@ -53,6 +63,10 @@ async function onRedisUnavailable(
   //   };
   // }
   try {
+    if (circuitOpen) {
+      console.warn("Circuit breaker is open. Redis is unavailable.");
+      return { result: null, error_type: "SERVICE_UNAVAILABLE" };
+    }
     const result = await getOriginalUrlFromDb(shortCode);
     return {
       result,
@@ -70,7 +84,6 @@ async function onRedisUnavailable(
     }
   }
 }
-
 export async function fetchOriginalUrl(
   shortCode: string,
   retryInterval: number = 100,
@@ -84,20 +97,29 @@ export async function fetchOriginalUrl(
 
   // console.info("waiitngQueueLength", pool.waitingCount);
 
-  const { ok: redisUp, value: cached } = await safeRedis(() =>
-    redis.get(shortCode),
-  );
+  const {
+    ok: redisUp,
+    value: cached,
+    circuitOpen,
+  } = await safeRedis(() => redis.get(shortCode));
 
-  if (!redisUp) return onRedisUnavailable(shortCode);
+  if (!redisUp || circuitOpen)
+    return onRedisUnavailable(shortCode, circuitOpen);
 
   if (cached) {
     console.info(`Cache hit for code: ${shortCode}`);
     return { result: cached, error_type: null };
   }
 
-  const { value: accquired } = await safeRedis(() =>
-    redis.set(`lock:${shortCode}`, "1", "EX", "5", "NX"),
-  );
+  const { value: accquired, circuitOpen: circuitOpenOnAccquiringLock } =
+    await safeRedis(() => redis.set(`lock:${shortCode}`, "1", "EX", "5", "NX"));
+
+  if (circuitOpenOnAccquiringLock) {
+    console.warn(
+      "Circuit breaker is open while trying to acquire lock. Redis is unavailable.",
+    );
+    return { result: null, error_type: "SERVICE_UNAVAILABLE" };
+  }
 
   if (accquired) {
     const result = await getOriginalUrlFromDb(shortCode);

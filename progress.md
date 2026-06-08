@@ -1,14 +1,18 @@
 ## Current Position
 
-Current Position: Module 3, Stage 4
+Current Position: Module 3, Stage 5
 Module: Module 3
-Stage: 4
-Last session: 2026-05-21
-Next action:  Network partition between app and Redis using tc in Docker — discover circuit breakers properly
+Stage: 5
+Last session: 2026-06-08
+Next action:  ElastiCache Redis — cluster vs single node, cross-AZ latency, real failure modes
 
 **Open questions / things I'm stuck on:**
 - Known gap: stuck job reaper not implemented — jobs that crash mid-processing 
   stay in pending/processing forever. Needs a cron in production.
+- Known gap (Module 4): circuit breaker state is in-memory per Node process. Run
+  3 instances and each has its own breaker — Instance A can be open while Instance
+  B is closed, so some requests fast-fail while others hang. Fix: shared breaker
+  state in Redis (ironic), or accept per-instance independence. M4 problem, not M3.
 
 ---
 
@@ -56,6 +60,7 @@ Next action:  Network partition between app and Redis using tc in Docker — dis
 | 2026-05-20 | 3 | On coalescing retry exhaustion, return 503 instead of falling back to DB | Two reasons: (1) if the lock holder hasn't warmed the cache before retries exhaust, it's about to — the client retry interval gives it time to land; (2) a DB fallback after all waiters have exhausted retries recreates the thundering herd at the application layer, defeating the entire lock | 503s are visible noise in client metrics and require the client to implement retries — callers that don't retry get a hard error instead of waiting transparently |
 | 2026-05-21 | 3 | cache-aside over write-through for URL updates | write-through pays two round trips on every write (SET requires full object) and warms cache for entries that may never be read again; cache-aside only touches Redis on invalidation — DEL requires no value, no round trip to fetch the updated record | one cache miss after every update; healed on next read by the SETNX coalescing lock, so the miss never fans out to a stampede |
 | 2026-05-22 | 3 | fail open to DB when Redis is down, but return 503 when the Redis connection pool is exhausted | Two distinct failure modes, two different responses. Redis down → fail open is a product call: a URL shortener should serve reads even in degraded state. Pool exhausted → 503 is a capacity signal, not a transient blip — falling back to DB when the pool is gone bypasses all coalescing protection and recreates the thundering herd at the DB layer | Redis-down fallback adds DB load during outages; pool-exhaustion 503s are visible noise to callers and require client retries |
+| 2026-06-08 | 3 | Circuit breaker in front of Redis over per-call retry exhaustion | Per-call retries treat each request in isolation — under a network partition every request still pays the full socket timeout before failing, and the coalescing lock re-arms the trap on each TTL boundary (F-08). A breaker shares state across calls: once tripped it fails fast for *all* callers and skips Redis entirely until a half-open probe proves it's back | Adds shared mutable state and tuning (trip threshold, open duration, probe policy); a falsely-tripped breaker bypasses a healthy cache and sends full load to the DB |
 
 
 ---
@@ -136,6 +141,14 @@ Next action:  Network partition between app and Redis using tc in Docker — dis
 - **Root cause in one sentence:** When the cache expires, every concurrent request misses simultaneously and races to query the DB, exhausting the connection pool before any response can be cached
 - **Fix:** Redis SETNX coalescing lock — only one request queries the DB while the rest wait and retry until the cache is warm; on retry exhaustion return 503 (no DB fallback — see Decisions Log 2026-05-20) — result: 0 failures after fix
 - **What I'd watch for in production:** P99 spikes that correlate with TTL boundaries or cache restarts — that's the signature
+
+### F-08: Slow failures under Redis network partition (fail-open's blind spot)
+- **Module/Stage:** M3 S4
+- **What I did:** simulated a network partition between app and Redis (Redis process up, network unreachable) while concurrent requests hit the same cold key
+- **What broke:** every request stalled on Redis. The first request acquired the SETNX lock but its call never returned (network black-holed, no RST); waiters retried until exhausted; once the lock TTL expired, the next wave of requests re-acquired the lock and repeated the same hang — a sustained queue of slow failures instead of fast ones
+- **Root cause in one sentence:** fail-open assumes Redis calls fail *fast*, but a network partition (vs. a dead process) gives no signal — calls hang until socket timeout, so every request pays the full timeout and the coalescing lock keeps re-arming the trap on each TTL boundary
+- **Fix:** circuit breaker in front of Redis — closed = healthy (normal path), open = Redis treated as down, skip it and fall through to DB immediately, half-open = single probe request decides whether to close again. Trips on consecutive timeouts/errors, not just exceptions
+- **What I'd watch for in production:** p99 latency climbing toward the Redis socket timeout (not spiking past it) while Redis health checks still pass — that gap between "Redis is up" and "Redis is reachable from the app" is where fail-open silently degrades into slow failure
 ---
 
 ## Cost Log
@@ -176,7 +189,7 @@ Next action:  Network partition between app and Redis using tc in Docker — dis
 - [x] Cache-aside vs write-through — when each makes sense
 - [x] Thundering herd — what it looks like in metrics
 - [x] Why "fail open vs fail closed" is a product decision, not a tech one
-- [ ] Circuit breaker states (closed/open/half-open) without looking it up
+- [x] Circuit breaker states (closed/open/half-open) without looking it up
 
 ### Module 4
 - [ ] Every piece of accidental state in a single-instance app
@@ -263,3 +276,4 @@ Next action:  Network partition between app and Redis using tc in Docker — dis
 | 2026-05-20 | Xh | M3 S1 | Implemented Redis SETNX coalescing lock, 503-on-retry-exhaustion pattern; 4012 failures → 0; logged F-07 final numbers and D-log entry | — |
 | 2026-05-20 | Xh | M3 S3 | Redis INFO stats, confirmed 99.85% hit rate, proved DB called exactly once per cache miss event via application logs | — |
 | 2026-05-21 | Xh | M3 S3 | Fail open with Redis pool exhaustion circuit — 503 on pool exhaustion instead of DB fallback; logged decision | — |
+| 2026-06-08 | 3 | M3 S4→S5 | Circuit breaker in front of Redis (closed/open/half-open) after reproducing network-partition slow-failures (F-08); logged breaker-over-retry-exhaustion decision; noted per-process breaker state as M4 gap | — |
