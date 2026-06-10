@@ -67,11 +67,16 @@ async function onRedisUnavailable(
       console.warn("Circuit breaker is open. Redis is unavailable.");
       return { result: null, error_type: "SERVICE_UNAVAILABLE" };
     }
+    console.warn(
+      `onRedisUnavailable called at ${Date.now()}, circuitOpen: ${circuitOpen}`,
+    );
+    const start = Date.now();
     const result = await getOriginalUrlFromDb(shortCode);
     return {
       result,
       error_type: result ? null : "NOT_FOUND",
     };
+    console.warn(`DB query took ${Date.now() - start}ms`);
   } catch (error) {
     if (
       error instanceof Error &&
