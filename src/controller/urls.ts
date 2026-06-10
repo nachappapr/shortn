@@ -75,7 +75,6 @@ export async function redirectToOriginalUrl(
   const { code } = req.params;
   try {
     const result = await fetchOriginalUrl(code);
-    console.info(`Fetched original URL for code ${code}:`, result);
     if (!result.result) {
       return next(new AppError("URL not found", 404, "NOT_FOUND"));
     }

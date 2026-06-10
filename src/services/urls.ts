@@ -95,8 +95,6 @@ export async function fetchOriginalUrl(
   // const percentageUsed =
   //   pool.totalCount > 0 ? (resourceUser / pool.totalCount) * 100 : 0;
 
-  // console.info("waiitngQueueLength", pool.waitingCount);
-
   const {
     ok: redisUp,
     value: cached,
