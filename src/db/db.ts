@@ -6,9 +6,9 @@ const pool = new Pool({
   max: 10,
   query_timeout: 5000,
   connectionTimeoutMillis: 2000,
-  // ssl: {
-  //   rejectUnauthorized: false,
-  // },
+  ssl: {
+    rejectUnauthorized: false,
+  },
 });
 
 pool.on("error", (err) => {
