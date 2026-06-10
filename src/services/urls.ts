@@ -142,7 +142,7 @@ export async function fetchOriginalUrl(
     if (retryCount < maxRetries) {
       retryInterval = retryInterval * (0.5 + Math.random()); // Exponential backoff with jitter
       await new Promise((resolve) => setTimeout(resolve, retryInterval));
-      return fetchOriginalUrl(shortCode, retryInterval, retryCount++);
+      return fetchOriginalUrl(shortCode, retryInterval, retryCount + 1);
     } else {
       const { value: fallback } = await safeRedis(() => redis.get(shortCode));
       if (fallback) return { result: fallback, error_type: null };
