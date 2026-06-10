@@ -1,10 +1,10 @@
 ## Current Position
 
-Current Position: Module 3, Stage 5
+Current Position: Module 3, Stage 6
 Module: Module 3
-Stage: 5
-Last session: 2026-06-08
-Next action:  ElastiCache Redis — cluster vs single node, cross-AZ latency, real failure modes
+Stage: 6
+Last session: 2026-06-10
+Next action:  Cost check — pull M3 AWS costs from Cost Explorer, log ElastiCache + RDS + EC2 spend
 
 **Open questions / things I'm stuck on:**
 - Known gap: stuck job reaper not implemented — jobs that crash mid-processing 
@@ -13,6 +13,10 @@ Next action:  ElastiCache Redis — cluster vs single node, cross-AZ latency, re
   3 instances and each has its own breaker — Instance A can be open while Instance
   B is closed, so some requests fast-fail while others hang. Fix: shared breaker
   state in Redis (ironic), or accept per-instance independence. M4 problem, not M3.
+- Known gap: 30s max request origin unconfirmed — suspect onRedisUnavailable 
+  DB fallback path under extreme pool contention. connectionTimeoutMillis 
+  error message mismatch means timeout isn't caught correctly. 
+  Fix: normalize error handling to catch all pg timeout variants.
 
 ---
 
@@ -62,6 +66,8 @@ Next action:  ElastiCache Redis — cluster vs single node, cross-AZ latency, re
 | 2026-05-22 | 3 | fail open to DB when Redis is down, but return 503 when the Redis connection pool is exhausted | Two distinct failure modes, two different responses. Redis down → fail open is a product call: a URL shortener should serve reads even in degraded state. Pool exhausted → 503 is a capacity signal, not a transient blip — falling back to DB when the pool is gone bypasses all coalescing protection and recreates the thundering herd at the DB layer | Redis-down fallback adds DB load during outages; pool-exhaustion 503s are visible noise to callers and require client retries |
 | 2026-06-08 | 3 | Circuit breaker in front of Redis over per-call retry exhaustion | Per-call retries treat each request in isolation — under a network partition every request still pays the full socket timeout before failing, and the coalescing lock re-arms the trap on each TTL boundary (F-08). A breaker shares state across calls: once tripped it fails fast for *all* callers and skips Redis entirely until a half-open probe proves it's back | Adds shared mutable state and tuning (trip threshold, open duration, probe policy); a falsely-tripped breaker bypasses a healthy cache and sends full load to the DB |
 | 2026-06-10 | 3 | `commandTimeout: 100ms` on Redis client | Without it, a silent network partition (packet black-hole) hangs each call ~15s on TCP retransmit timeout — the breaker takes ~75s to trip instead of protecting fast | A genuinely slow-but-healthy Redis moment above 100ms gets counted as a failure and can trip the breaker, dumping load on the DB |
+| 2026-06-10 | 3 | commandTimeout raised from 100ms to 500ms for ElastiCache | Real p99 under 1000 VUs exceeded 100ms, falsely tripping the breaker and taking Redis offline. Timeout must be calibrated to peak load p99, not idle baseline | A genuinely slow Redis moment above 500ms now counts as a failure — acceptable tradeoff given measured p99 was well under 500ms |
+| 2026-06-10 | 3 | retryCount++ bug fix → retryCount + 1 in coalescing lock retry loop | Post-increment passed current value to recursive call, never advancing the counter — retry loop never exited, producing 30s max requests under load | — |
 
 
 ---
@@ -160,6 +166,7 @@ Next action:  ElastiCache Redis — cluster vs single node, cross-AZ latency, re
 |------|--------|---------------|--------------|------------|-------|
 | 2026-04-28 | 1 | RDS db.t3.micro, EC2 t3.micro x2, VPC, EC2-Other | 2h | $0.11 | RDS $0.06, EC2 $0.03, VPC $0.01, EC2-Other $0.01 — Mumbai region |
 | 2026-05-08 | 2 | Route 53, EC2, RDS, VPC, Others | ~2d | $0.72 (+$0.13 tax = $0.85) | Route 53 $0.50, EC2 $0.09, RDS $0.06, VPC $0.04, Others $0.03 — ALB + load test session |
+| 2026-06-10 | 3 | EC2, RDS, VPC, ElasticCache | ~6h | - | - |
 
 **Running total:** $0.83 (excl. tax) / $0.96 (incl. tax)
 
@@ -278,3 +285,4 @@ Next action:  ElastiCache Redis — cluster vs single node, cross-AZ latency, re
 | 2026-05-20 | Xh | M3 S3 | Redis INFO stats, confirmed 99.85% hit rate, proved DB called exactly once per cache miss event via application logs | — |
 | 2026-05-21 | Xh | M3 S3 | Fail open with Redis pool exhaustion circuit — 503 on pool exhaustion instead of DB fallback; logged decision | — |
 | 2026-06-08 | 3 | M3 S4→S5 | Circuit breaker in front of Redis (closed/open/half-open) after reproducing network-partition slow-failures (F-08); logged breaker-over-retry-exhaustion decision; noted per-process breaker state as M4 gap | — |
+| 2026-06-10 | Xh | M3 S5 | VPC + EC2 + ElastiCache + RDS provisioned on AWS; measured cross-AZ latency (0.54ms avg); calibrated commandTimeout to 500ms; fixed retryCount++ bug; 0% errors at 1273 RPS | Multi-AZ replica (AWS console limitation) |
