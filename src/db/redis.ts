@@ -6,6 +6,7 @@ const redis = new Redis(process.env.REDIS_URL!, {
   maxRetriesPerRequest: 0,
   lazyConnect: true,
   enableReadyCheck: true,
+  commandTimeout: 100,
 });
 
 redis.on("error", (err) => {
