@@ -7,7 +7,7 @@
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "build": "tsc",
-    "start": "node src/server.js",
+    "start": "node --env-file=.env.production dist/server.js",
     "k6": "k6 run -e BASE_URL=http://localhost:3000 load/k6/m1-baseline.js",
     "k6-batch": "k6 run -e BASE_URL=http://localhost:3000 load/k6/m2-batch.js"
   },

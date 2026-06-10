@@ -6,6 +6,9 @@ package-lock.json.bak
 .env
 .env.local
 .env.*.local
+.env.prod
+.env.*.prod
+.env.production
 *.pem
 *.key
 
