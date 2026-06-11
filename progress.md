@@ -1,10 +1,10 @@
 ## Current Position
 
-Current Position: Module 3, Stage 6
-Module: Module 3
-Stage: 6
-Last session: 2026-06-10
-Next action:  Cost check — pull M3 AWS costs from Cost Explorer, log ElastiCache + RDS + EC2 spend
+Current Position: Module 4, Stage 0
+Module: Module 4
+Stage: 0
+Last session: 2026-06-11
+Next action:  set up Docker Compose with 3 Node instances behind Nginx.
 
 **Open questions / things I'm stuck on:**
 - Known gap: stuck job reaper not implemented — jobs that crash mid-processing 
@@ -26,7 +26,7 @@ Next action:  Cost check — pull M3 AWS costs from Cost Explorer, log ElastiCac
 |---|--------|--------|---------|----------|-------|
 | 1 | Single Box | ✅ Done | 2026-04-27 | 2026-04-29 | — |
 | 2 | API Design | ✅ Done | 2026-05-01 | 2026-05-12 | — |
-| 3 | Caching | 🟡 In progress | 2026-05-12 | — | — |
+| 3 | Caching | ✅ Done| 2026-05-12 | 2026-06-11 | — |
 | 4 | Horizontal Scale | ⬜ | — | — | — |
 | 5 | Async Work | ⬜ | — | — | — |
 | 6 | Data: Replication, Sharding, Migrations | ⬜ | — | — | — |
@@ -166,9 +166,10 @@ Next action:  Cost check — pull M3 AWS costs from Cost Explorer, log ElastiCac
 |------|--------|---------------|--------------|------------|-------|
 | 2026-04-28 | 1 | RDS db.t3.micro, EC2 t3.micro x2, VPC, EC2-Other | 2h | $0.11 | RDS $0.06, EC2 $0.03, VPC $0.01, EC2-Other $0.01 — Mumbai region |
 | 2026-05-08 | 2 | Route 53, EC2, RDS, VPC, Others | ~2d | $0.72 (+$0.13 tax = $0.85) | Route 53 $0.50, EC2 $0.09, RDS $0.06, VPC $0.04, Others $0.03 — ALB + load test session |
-| 2026-06-10 | 3 | EC2, RDS, VPC, ElasticCache | ~6h | - | - |
+| 2026-06-10 | 3 | EC2, RDS, VPC, ElastiCache, Route 53 | ~6h | $0.76 (+$0.14 tax = $0.90) | ElastiCache too short-lived to bill; Route 53 $0.50 flat fee dominates again |
 
-**Running total:** $0.83 (excl. tax) / $0.96 (incl. tax)
+
+**Running total:** $1.59 (excl. tax) / $1.86 (incl. tax)
 
 **Cost surprises** (things that cost more than I expected — review before starting next module):
 - Route 53 $0.50 dominated M2 costs — more than EC2+RDS+VPC combined. Hosted zone fee ($0.50/month flat) dwarfs compute at this small scale.
