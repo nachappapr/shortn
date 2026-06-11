@@ -7,7 +7,7 @@ const redis = new Redis(process.env.REDIS_URL!, {
   lazyConnect: true,
   enableReadyCheck: true,
   commandTimeout: 500,
-  tls: {},
+  // tls: {},
 });
 
 redis.on("error", (err) => {

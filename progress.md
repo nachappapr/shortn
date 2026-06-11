@@ -1,10 +1,10 @@
 ## Current Position
 
-Current Position: Module 4, Stage 0
+Current Position: Module 4, Stage 1
 Module: Module 4
-Stage: 0
+Stage: 1
 Last session: 2026-06-11
-Next action:  set up Docker Compose with 3 Node instances behind Nginx.
+Next action: move circuit breaker state to Redis (shared across instances).
 
 **Open questions / things I'm stuck on:**
 - Known gap: stuck job reaper not implemented — jobs that crash mid-processing 
@@ -68,7 +68,7 @@ Next action:  set up Docker Compose with 3 Node instances behind Nginx.
 | 2026-06-10 | 3 | `commandTimeout: 100ms` on Redis client | Without it, a silent network partition (packet black-hole) hangs each call ~15s on TCP retransmit timeout — the breaker takes ~75s to trip instead of protecting fast | A genuinely slow-but-healthy Redis moment above 100ms gets counted as a failure and can trip the breaker, dumping load on the DB |
 | 2026-06-10 | 3 | commandTimeout raised from 100ms to 500ms for ElastiCache | Real p99 under 1000 VUs exceeded 100ms, falsely tripping the breaker and taking Redis offline. Timeout must be calibrated to peak load p99, not idle baseline | A genuinely slow Redis moment above 500ms now counts as a failure — acceptable tradeoff given measured p99 was well under 500ms |
 | 2026-06-10 | 3 | retryCount++ bug fix → retryCount + 1 in coalescing lock retry loop | Post-increment passed current value to recursive call, never advancing the counter — retry loop never exited, producing 30s max requests under load | — |
-
+| 2026-06-11 | 4 | Redis-backed rate limiter over in-memory | in-memory state is per-instance — 3 instances means 3x the allowed limit effectively | extra Redis round trip on every request; if Redis is down, rate limiting fails open |
 
 ---
 
@@ -287,3 +287,4 @@ Next action:  set up Docker Compose with 3 Node instances behind Nginx.
 | 2026-05-21 | Xh | M3 S3 | Fail open with Redis pool exhaustion circuit — 503 on pool exhaustion instead of DB fallback; logged decision | — |
 | 2026-06-08 | 3 | M3 S4→S5 | Circuit breaker in front of Redis (closed/open/half-open) after reproducing network-partition slow-failures (F-08); logged breaker-over-retry-exhaustion decision; noted per-process breaker state as M4 gap | — |
 | 2026-06-10 | Xh | M3 S5 | VPC + EC2 + ElastiCache + RDS provisioned on AWS; measured cross-AZ latency (0.54ms avg); calibrated commandTimeout to 500ms; fixed retryCount++ bug; 0% errors at 1273 RPS | Multi-AZ replica (AWS console limitation) |
+| 2026-06-11 | 3h | M4 S0 | Added 3 Node.js app instances behind Nginx (upstream round-robin); added global rate limiter in Redis (fixed-window counter per IP); containerized with Docker Compose | — |
