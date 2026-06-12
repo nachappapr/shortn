@@ -3,16 +3,15 @@
 Current Position: Module 4, Stage 1
 Module: Module 4
 Stage: 1
-Last session: 2026-06-11
-Next action: move circuit breaker state to Redis (shared across instances).
+Last session: 2026-06-12
+Next action: verify open-breaker behavior — does it fail-over to DB or return error to client? That answer determines whether Stage 1 has a correctness bug before we move to Stage 2 fix.
 
 **Open questions / things I'm stuck on:**
 - Known gap: stuck job reaper not implemented — jobs that crash mid-processing 
   stay in pending/processing forever. Needs a cron in production.
-- Known gap (Module 4): circuit breaker state is in-memory per Node process. Run
-  3 instances and each has its own breaker — Instance A can be open while Instance
-  B is closed, so some requests fast-fail while others hang. Fix: shared breaker
-  state in Redis (ironic), or accept per-instance independence. M4 problem, not M3.
+- ~~Known gap (Module 4): circuit breaker state is in-memory per Node process~~
+  Decided 2026-06-12: accept per-instance breaker independence — shared-in-Redis
+  is a circular dependency. See Decisions Log + F-09.
 - Known gap: 30s max request origin unconfirmed — suspect onRedisUnavailable 
   DB fallback path under extreme pool contention. connectionTimeoutMillis 
   error message mismatch means timeout isn't caught correctly. 
@@ -69,6 +68,7 @@ Next action: move circuit breaker state to Redis (shared across instances).
 | 2026-06-10 | 3 | commandTimeout raised from 100ms to 500ms for ElastiCache | Real p99 under 1000 VUs exceeded 100ms, falsely tripping the breaker and taking Redis offline. Timeout must be calibrated to peak load p99, not idle baseline | A genuinely slow Redis moment above 500ms now counts as a failure — acceptable tradeoff given measured p99 was well under 500ms |
 | 2026-06-10 | 3 | retryCount++ bug fix → retryCount + 1 in coalescing lock retry loop | Post-increment passed current value to recursive call, never advancing the counter — retry loop never exited, producing 30s max requests under load | — |
 | 2026-06-11 | 4 | Redis-backed rate limiter over in-memory | in-memory state is per-instance — 3 instances means 3x the allowed limit effectively | extra Redis round trip on every request; if Redis is down, rate limiting fails open |
+| 2026-06-12 | 4 | Accept per-instance circuit breaker state (over shared-in-Redis or gossip) | Shared-in-Redis is a circular dependency — the breaker exists to protect against Redis failure, so its state can't live in Redis; gossip adds a coordination protocol for marginal benefit; at 3 instances the blast radius of disagreement is too small to justify shared-state complexity | Split-brain during Redis incidents (F-09): instances disagree on breaker state, producing bimodal latency, and each instance pays its own trip/half-open-probe cycle. Flips at scale — a large fleet means N independent half-open probes hammering a recovering Redis and a longer window of inconsistent client experience |
 
 ---
 
@@ -156,6 +156,14 @@ Next action: move circuit breaker state to Redis (shared across instances).
 - **Root cause in one sentence:** fail-open assumes Redis calls fail *fast*, but a network partition (vs. a dead process) gives no signal — calls hang until socket timeout, so every request pays the full timeout and the coalescing lock keeps re-arming the trap on each TTL boundary
 - **Fix:** circuit breaker in front of Redis — closed = healthy (normal path), open = Redis treated as down, skip it and fall through to DB immediately, half-open = single probe request decides whether to close again. Trips on consecutive timeouts/errors, not just exceptions. **Correction (2026-06-10):** the breaker alone wasn't enough. Without `commandTimeout: 100ms` on the Redis client, each call still hangs ~15s under a true silent partition — the breaker never sees errors fast enough to trip. The timeout is what converts a 15s hang into a fast failure the breaker can act on.
 - **What I'd watch for in production:** p99 latency climbing toward the Redis socket timeout (not spiking past it) while Redis health checks still pass — that gap between "Redis is up" and "Redis is reachable from the app" is where fail-open silently degrades into slow failure
+
+### F-09: Circuit breaker split-brain across instances
+- **Module/Stage:** M4 S1
+- **What I did:** ran 3 app instances behind Nginx and partitioned Redis mid-load — each instance has its own in-memory circuit breaker
+- **What broke:** each instance's breaker tripped (and recovered) independently, so identical requests landed on instances in different breaker states — some fast-failed to DB while others hung on dead Redis; half-open probes fired per-instance too, so the fleet never agreed on whether Redis was back
+- **Root cause in one sentence:** breaker state is in-memory per Node process, so "is Redis healthy" is answered N times by N instances instead of once by the fleet — scale-out turned one circuit breaker into three that can disagree
+- **Fix:** accept per-instance breaker state — blast radius too small to justify shared-state complexity. Shared-in-Redis rejected: circular dependency — the breaker exists to protect against Redis failure, so its state can't live in Redis (see Decisions Log 2026-06-12)
+- **What I'd watch for in production:** bimodal redirect latency / p50–p99 divergence on the same endpoint during a Redis blip — the histogram splits into a fast-fail hump (~1–5ms, open breaker → DB) and a hung-on-timeout hump (~500ms, closed breaker → dead Redis); a coherent fleet shifts as one peak, a split-brain fleet shows two
 ---
 
 ## Cost Log
@@ -288,3 +296,4 @@ Next action: move circuit breaker state to Redis (shared across instances).
 | 2026-06-08 | 3 | M3 S4→S5 | Circuit breaker in front of Redis (closed/open/half-open) after reproducing network-partition slow-failures (F-08); logged breaker-over-retry-exhaustion decision; noted per-process breaker state as M4 gap | — |
 | 2026-06-10 | Xh | M3 S5 | VPC + EC2 + ElastiCache + RDS provisioned on AWS; measured cross-AZ latency (0.54ms avg); calibrated commandTimeout to 500ms; fixed retryCount++ bug; 0% errors at 1273 RPS | Multi-AZ replica (AWS console limitation) |
 | 2026-06-11 | 3h | M4 S0 | Added 3 Node.js app instances behind Nginx (upstream round-robin); added global rate limiter in Redis (fixed-window counter per IP); containerized with Docker Compose | — |
+| 2026-06-12 | Xh | M4 S1 | Reproduced circuit breaker split-brain across 3 instances (F-09); derived bimodal latency / p50–p99 divergence as the production signal; decided to accept per-instance breaker state for now | verifying open-breaker behavior (DB fail-over vs client error) |
