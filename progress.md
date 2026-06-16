@@ -1,12 +1,16 @@
 ## Current Position
 
-Current Position: Module 4, Stage 1
+Current Position: Module 4, Stage 1 (closing → Stage 2)
 Module: Module 4
 Stage: 1
-Last session: 2026-06-12
-Next action: verify open-breaker behavior — does it fail-over to DB or return error to client? That answer determines whether Stage 1 has a correctness bug before we move to Stage 2 fix.
+Last session: 2026-06-16
+Next action: Stage 2 — centralized logging + request-ID propagation across the 3 instances, so one request can be traced across containers during a Redis blip (this is what makes the bimodal/split-brain signal observable in practice).
 
 **Open questions / things I'm stuck on:**
+- ~~Open-breaker behavior unverified — fail-over to DB or error to client?~~
+  Resolved 2026-06-16: code returns SERVICE_UNAVAILABLE on breaker-open, and
+  this is now the *intended* behavior (fail-closed) — see Decisions Log 2026-06-16.
+  Not a bug. Revises the 2026-05-22 fail-open stance.
 - Known gap: stuck job reaper not implemented — jobs that crash mid-processing 
   stay in pending/processing forever. Needs a cron in production.
 - ~~Known gap (Module 4): circuit breaker state is in-memory per Node process~~
@@ -213,6 +217,7 @@ Next action: verify open-breaker behavior — does it fail-over to DB or return 
 - [ ] Why distributed locks are not as simple as `SETNX`
 - [ ] Fencing tokens — what they prevent that TTLs can't
 - [ ] Stateless vs stateful services, sharply
+- [x] Bimodal latency / circuit-breaker split-brain — why per-instance breaker state splits one endpoint's latency histogram into two humps (fast-fail open breaker vs slow-fail closed breaker waiting out commandTimeout), and why a single p95 lands in the empty valley between them and lies
 
 ### Module 5
 - [ ] At-least-once vs at-most-once vs effectively-once
@@ -297,3 +302,4 @@ Next action: verify open-breaker behavior — does it fail-over to DB or return 
 | 2026-06-10 | Xh | M3 S5 | VPC + EC2 + ElastiCache + RDS provisioned on AWS; measured cross-AZ latency (0.54ms avg); calibrated commandTimeout to 500ms; fixed retryCount++ bug; 0% errors at 1273 RPS | Multi-AZ replica (AWS console limitation) |
 | 2026-06-11 | 3h | M4 S0 | Added 3 Node.js app instances behind Nginx (upstream round-robin); added global rate limiter in Redis (fixed-window counter per IP); containerized with Docker Compose | — |
 | 2026-06-12 | Xh | M4 S1 | Reproduced circuit breaker split-brain across 3 instances (F-09); derived bimodal latency / p50–p99 divergence as the production signal; decided to accept per-instance breaker state for now | verifying open-breaker behavior (DB fail-over vs client error) |
+| 2026-06-16 | Xh | M4 S1 | Traced open-breaker path in code → confirmed returns SERVICE_UNAVAILABLE; decided fail-closed is the intended behavior (D-log 2026-06-16, revises 2026-05-22 fail-open); re-derived bimodal latency from first principles and earned the concept; reaffirmed accept-split-brain (shared state deferred to next module) | Stage 2 (centralized logging / request-ID tracing) |
