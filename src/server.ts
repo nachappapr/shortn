@@ -6,12 +6,16 @@ import notFoundMiddleware from "./middleware/not-found.middleware.js";
 import urlRoutes from "./routes/urls.js";
 import os from "os";
 import redis from "./db/redis.js";
+import { v4 as uuidv4 } from "uuid";
+import als from "./utils.ts/context.js";
+import { logger } from "./utils.ts/logger.js";
+
 dotenv.config();
+
+const PORT = process.env.PORT || 3000;
 
 const app = express();
 app.use(express.json());
-const PORT = process.env.PORT || 3000;
-const rateLimitMap = new Map<string, number>();
 
 // Rate limiting middleware
 app.use(async (req, res, next) => {
@@ -26,9 +30,17 @@ app.use(async (req, res, next) => {
   }
   next();
 });
+
+app.use((req, res, next) => {
+  const requestId = (req.headers["x-request-id"] || uuidv4()) as string;
+  als.run({ requestId }, () => {
+    next();
+  });
+});
+
 // Health check endpoint
 app.get("/health", (req, res) => {
-  console.log(`Request handled by ${os.hostname()}`);
+  logger("Health check endpoint hit");
   res.status(200).json({ status: "ok" });
 });
 

@@ -19,6 +19,7 @@ import {
   processBatchInsertJob,
   saveShortUrl,
 } from "../services/urls.js";
+import { logger } from "../utils.ts/logger.js";
 
 export async function createShortUrl(
   req: Request<Record<string, string>, unknown, CreateUrl>,
@@ -106,11 +107,11 @@ export async function getAllUrls(
   next: NextFunction,
 ) {
   const { limit = 20, after } = req.query as unknown as GetAllUrls;
-  console.log("Received query parameters:", { limit, after });
   try {
     const result = await fetchAllUrls(limit, after);
     res.status(200).json(result);
   } catch (err) {
+    logger("Error fetching all URLs:", { error: err });
     next(new AppError("Internal Server Error", 500, "INTERNAL_ERROR"));
   }
 }
@@ -125,7 +126,7 @@ export async function getBatchJobStatus(
     const result = await fetchBatchJobStatus(jobId);
     res.status(200).json(result);
   } catch (err) {
-    console.error("Error fetching batch job status:", err);
+    logger("Error fetching batch job status:", { error: err });
     if (err instanceof DatabaseError && err.code === "22P02") {
       return next(new AppError("Invalid job ID format", 400, "INVALID_JOB_ID"));
     }
@@ -136,7 +137,7 @@ export async function getBatchJobStatus(
       );
     }
 
-    console.error("Error fetching batch job status:", err);
+    logger("Error fetching batch job status:", { error: err });
     next(new AppError("Internal Server Error", 500, "INTERNAL_ERROR"));
   }
 }

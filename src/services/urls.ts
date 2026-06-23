@@ -8,6 +8,7 @@ import {
 import { AppError } from "../errors/app.error.js";
 import { CircuitBreakerError } from "../errors/circuit.error.js";
 import redis, { redisCircuitBreaker } from "../db/redis.js";
+import { logger } from "../utils.ts/logger.js";
 
 export async function saveShortUrl(
   originalUrl: string,
@@ -45,7 +46,7 @@ async function safeRedis<T>(
     };
   } catch (error) {
     if (error instanceof CircuitBreakerError) {
-      console.warn("Circuit breaker is open. Redis is unavailable.");
+      logger("Circuit breaker is open. Redis is unavailable.");
       return { value: null, ok: false, circuitOpen: true };
     }
     return { value: null, ok: false, circuitOpen: false };
@@ -64,15 +65,15 @@ async function onRedisUnavailable(
   // }
   try {
     if (circuitOpen) {
-      console.warn("Circuit breaker is open. Redis is unavailable.");
+      logger("Circuit breaker is open. Redis is unavailable.");
       return { result: null, error_type: "SERVICE_UNAVAILABLE" };
     }
-    console.info(
+    logger(
       `onRedisUnavailable called at ${Date.now()}, circuitOpen: ${circuitOpen}`,
     );
     const start = Date.now();
     const result = await getOriginalUrlFromDb(shortCode);
-    console.info(`DB query took ${Date.now() - start}ms`);
+    logger(`DB query took ${Date.now() - start}ms`);
     return {
       result,
       error_type: result ? null : "NOT_FOUND",
@@ -84,7 +85,7 @@ async function onRedisUnavailable(
     ) {
       return { result: null, error_type: "SERVICE_UNAVAILABLE" };
     } else {
-      console.error("Error retrieving URL from database:", error);
+      logger("Error retrieving URL from database:", { error: error });
       return { result: null, error_type: "NOT_FOUND" };
     }
   }
@@ -118,8 +119,9 @@ export async function fetchOriginalUrl(
     await safeRedis(() => redis.set(`lock:${shortCode}`, "1", "EX", "5", "NX"));
 
   if (circuitOpenOnAccquiringLock) {
-    console.warn(
+    logger(
       "Circuit breaker is open while trying to acquire lock. Redis is unavailable.",
+      { shortCode },
     );
     return { result: null, error_type: "SERVICE_UNAVAILABLE" };
   }
@@ -129,7 +131,9 @@ export async function fetchOriginalUrl(
 
     if (result) {
       try {
-        console.info(`Cache miss for code: ${shortCode}. Caching result.`);
+        logger(`Cache miss for code: ${shortCode}. Caching result.`, {
+          shortCode,
+        });
         await redis.set(
           shortCode,
           result,
@@ -137,7 +141,7 @@ export async function fetchOriginalUrl(
           parseInt(process.env.URL_CACHE_TTL_SECONDS || "60", 10),
         );
       } catch (error) {
-        console.error("Error setting Redis cache:", error);
+        logger("Error setting Redis cache:", { error: error });
       } finally {
         await redis.del(`lock:${shortCode}`); // Release lock after caching
         return { result, error_type: null };
