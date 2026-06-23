@@ -1,10 +1,10 @@
 ## Current Position
 
-Current Position: Module 4, Stage 1 (closing → Stage 2)
+Current Position: Module 4, Stage 2 (done → Stage 3)
 Module: Module 4
-Stage: 1
-Last session: 2026-06-16
-Next action: Stage 2 — centralized logging + request-ID propagation across the 3 instances, so one request can be traced across containers during a Redis blip (this is what makes the bimodal/split-brain signal observable in practice).
+Stage: 2
+Last session: 2026-06-23
+Next action: Stage 3 — move accidental state off the instances. Rate limiter is already in Redis (done M4 S0). Remaining: sessions → Redis or stateless JWT (discuss revocation tradeoffs), and the setInterval cron running 3x → leader election (Redis lock w/ TTL) or dedicated worker. Also the known stuck-job-reaper gap fits here.
 
 **Open questions / things I'm stuck on:**
 - ~~Open-breaker behavior unverified — fail-over to DB or error to client?~~
@@ -73,6 +73,8 @@ Next action: Stage 2 — centralized logging + request-ID propagation across the
 | 2026-06-10 | 3 | retryCount++ bug fix → retryCount + 1 in coalescing lock retry loop | Post-increment passed current value to recursive call, never advancing the counter — retry loop never exited, producing 30s max requests under load | — |
 | 2026-06-11 | 4 | Redis-backed rate limiter over in-memory | in-memory state is per-instance — 3 instances means 3x the allowed limit effectively | extra Redis round trip on every request; if Redis is down, rate limiting fails open |
 | 2026-06-12 | 4 | Accept per-instance circuit breaker state (over shared-in-Redis or gossip) | Shared-in-Redis is a circular dependency — the breaker exists to protect against Redis failure, so its state can't live in Redis; gossip adds a coordination protocol for marginal benefit; at 3 instances the blast radius of disagreement is too small to justify shared-state complexity | Split-brain during Redis incidents (F-09): instances disagree on breaker state, producing bimodal latency, and each instance pays its own trip/half-open-probe cycle. Flips at scale — a large fleet means N independent half-open probes hammering a recovering Redis and a longer window of inconsistent client experience |
+| 2026-06-23 | 4 | Mint request ID at Nginx edge (`$request_id`), forward as `X-Request-ID`; Node reads header, generates UUID only as fallback | The outermost component that touches the request should mint the ID so it covers the *entire* lifetime — including hops upstream of the app (LB timeout, all instances busy) that an app-minted ID would be blind to. Node generating its own when the header is present would sever the chain: two IDs for one request, defeating tracing | Trusting an inbound header means a client could spoof `X-Request-ID`; fine internally (Nginx overwrites/sets it) but must not be trusted as a security identifier |
+| 2026-06-23 | 4 | Carry request ID via `AsyncLocalStorage`, not by threading `req` through every function | A shared module-level `let currentRequestId` is clobbered when requests interleave on the event loop (A parks at `await`, B overwrites, A resumes reading B's id — silent mis-attribution). Threading `req` everywhere pollutes non-HTTP function signatures (cacheService, redis wrapper) just so logs can reach the id. `als` binds the id to the async execution context, isolated per request, readable at any depth | Adds an implicit-context mechanism that's easy to misuse (reading `getStore()` at module load captures the startup value forever — must read at call time, per call); instanceId stays a process-level const since it never changes |
 
 ---
 
@@ -218,6 +220,7 @@ Next action: Stage 2 — centralized logging + request-ID propagation across the
 - [ ] Fencing tokens — what they prevent that TTLs can't
 - [ ] Stateless vs stateful services, sharply
 - [x] Bimodal latency / circuit-breaker split-brain — why per-instance breaker state splits one endpoint's latency histogram into two humps (fast-fail open breaker vs slow-fail closed breaker waiting out commandTimeout), and why a single p95 lands in the empty valley between them and lies
+- [x] Request-ID / correlation-ID tracing across instances — before: 3 separate log streams, a "slow at 14:32" complaint can't be tied to one request because timestamps collide, the code isn't unique per trip, and user/IP identifies the person not the request; after: one ID minted at Nginx, forwarded inward unchanged, stamped on every line via AsyncLocalStorage, so grepping one id assembles the whole journey (Nginx + app + breaker) and tells you which instance served it and what its breaker was doing
 
 ### Module 5
 - [ ] At-least-once vs at-most-once vs effectively-once
@@ -303,3 +306,4 @@ Next action: Stage 2 — centralized logging + request-ID propagation across the
 | 2026-06-11 | 3h | M4 S0 | Added 3 Node.js app instances behind Nginx (upstream round-robin); added global rate limiter in Redis (fixed-window counter per IP); containerized with Docker Compose | — |
 | 2026-06-12 | Xh | M4 S1 | Reproduced circuit breaker split-brain across 3 instances (F-09); derived bimodal latency / p50–p99 divergence as the production signal; decided to accept per-instance breaker state for now | verifying open-breaker behavior (DB fail-over vs client error) |
 | 2026-06-16 | Xh | M4 S1 | Traced open-breaker path in code → confirmed returns SERVICE_UNAVAILABLE; decided fail-closed is the intended behavior (D-log 2026-06-16, revises 2026-05-22 fail-open); re-derived bimodal latency from first principles and earned the concept; reaffirmed accept-split-brain (shared state deferred to next module) | Stage 2 (centralized logging / request-ID tracing) |
+| 2026-06-23 | Xh | M4 S2 | Request-ID propagation: Nginx mints `$request_id` + logs it (traced log_format) + forwards `X-Request-ID`; Node middleware reads header w/ UUID fallback, runs request inside `als.run`; logger pulls requestId from `als.getStore()` (call-time) + instanceId from process const; breaker logs the trip/fallback decision (colocated w/ cause, id attaches via als). Verification half-done — burst hit the rate limiter (all 429), concept confirmed instead | Re-running trace verification past the rate limiter; logging the other endpoints |
