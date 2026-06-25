@@ -1,10 +1,20 @@
 ## Current Position
 
-Current Position: Module 4, Stage 2 (done → Stage 3)
+Current Position: Module 4, Stage 3 (in progress — design done, build pending)
 Module: Module 4
-Stage: 2
-Last session: 2026-06-23
-Next action: Stage 3 — move accidental state off the instances. Rate limiter is already in Redis (done M4 S0). Remaining: sessions → Redis or stateless JWT (discuss revocation tradeoffs), and the setInterval cron running 3x → leader election (Redis lock w/ TTL) or dedicated worker. Also the known stuck-job-reaper gap fits here.
+Stage: 3
+Last session: 2026-06-25
+Next action: Resolve one open design question first — heartbeat write granularity:
+bump bulk_jobs.updated_at per chunk; decide whether that bump rides inside the
+chunk's transaction or is a separate write. Then build, in order:
+(1) bulk_job_items migration — merge bulk_job_results in; one row per URL carrying
+    original_url / status / url_id / error; written at job creation BEFORE the 202.
+(2) atomic claim: UPDATE bulk_jobs SET status='processing' WHERE id=$1 AND status='pending' RETURNING id
+    (rowCount=0 → lost the race, walk away).
+(3) worker heartbeat: bump updated_at from inside the processing loop, per chunk.
+(4) reaper cron: UPDATE ... WHERE status='processing' AND updated_at < now()-threshold.
+Then k6 to pin: chunk size (cost-per-commit/fsync vs work-lost-per-crash) and
+reaper threshold (above p99 legit processing time, NOT the average).
 
 **Open questions / things I'm stuck on:**
 - ~~Open-breaker behavior unverified — fail-over to DB or error to client?~~
@@ -30,7 +40,7 @@ Next action: Stage 3 — move accidental state off the instances. Rate limiter i
 | 1 | Single Box | ✅ Done | 2026-04-27 | 2026-04-29 | — |
 | 2 | API Design | ✅ Done | 2026-05-01 | 2026-05-12 | — |
 | 3 | Caching | ✅ Done| 2026-05-12 | 2026-06-11 | — |
-| 4 | Horizontal Scale | ⬜ | — | — | — |
+| 4 | Horizontal Scale | 🟡 | 2026-06-11 | — | — |
 | 5 | Async Work | ⬜ | — | — | — |
 | 6 | Data: Replication, Sharding, Migrations | ⬜ | — | — | — |
 | 7 | Auth & Security | ⬜ | — | — | — |
@@ -75,6 +85,9 @@ Next action: Stage 3 — move accidental state off the instances. Rate limiter i
 | 2026-06-12 | 4 | Accept per-instance circuit breaker state (over shared-in-Redis or gossip) | Shared-in-Redis is a circular dependency — the breaker exists to protect against Redis failure, so its state can't live in Redis; gossip adds a coordination protocol for marginal benefit; at 3 instances the blast radius of disagreement is too small to justify shared-state complexity | Split-brain during Redis incidents (F-09): instances disagree on breaker state, producing bimodal latency, and each instance pays its own trip/half-open-probe cycle. Flips at scale — a large fleet means N independent half-open probes hammering a recovering Redis and a longer window of inconsistent client experience |
 | 2026-06-23 | 4 | Mint request ID at Nginx edge (`$request_id`), forward as `X-Request-ID`; Node reads header, generates UUID only as fallback | The outermost component that touches the request should mint the ID so it covers the *entire* lifetime — including hops upstream of the app (LB timeout, all instances busy) that an app-minted ID would be blind to. Node generating its own when the header is present would sever the chain: two IDs for one request, defeating tracing | Trusting an inbound header means a client could spoof `X-Request-ID`; fine internally (Nginx overwrites/sets it) but must not be trusted as a security identifier |
 | 2026-06-23 | 4 | Carry request ID via `AsyncLocalStorage`, not by threading `req` through every function | A shared module-level `let currentRequestId` is clobbered when requests interleave on the event loop (A parks at `await`, B overwrites, A resumes reading B's id — silent mis-attribution). Threading `req` everywhere pollutes non-HTTP function signatures (cacheService, redis wrapper) just so logs can reach the id. `als` binds the id to the async execution context, isolated per request, readable at any depth | Adds an implicit-context mechanism that's easy to misuse (reading `getStore()` at module load captures the startup value forever — must read at call time, per call); instanceId stays a process-level const since it never changes |
+| 2026-06-25 | 4 | Switch bulk job processing from single-outer-transaction (all-or-nothing) to incremental commits (durable per-chunk progress) | a worker crash near the end of a large batch rolls back all completed work, forcing a full redo and showing the polling client zero progress after minutes of waiting — a broken promise, not just wasted CPU | the job is now observable mid-flight (rows commit as they go), but we take on resumability — a reaped job must resume from where the dead worker stopped, not restart, which reintroduces the duplicate-work / double-claim problem a reaper must guard against |
+| 2026-06-25 | 4 | Persist batch input as child rows in `bulk_job_items` (one per URL, with per-item status), written at job creation | input must outlive the worker process for a reaped job to resume; per-item status makes "remaining work" a single indexed query instead of diffing inputs against `bulk_job_results` | N extra rows + N status updates per job; the input is now stored twice (request body + item rows) until the job completes |
+| 2026-06-25 | 4 | Merge `bulk_job_results` into `bulk_job_items`: one row per input URL carrying URL + status + result (`url_id`/error) | input and output were two near-identical tables; one table makes "remaining work" and "results" the same query and removes the input/output diff on resume | migration to move/backfill existing result rows; the row is now mutated in place (pending→completed) rather than insert-only, so the audit trail of "when did this flip" is lost unless we add it |
 
 ---
 
@@ -307,3 +320,4 @@ Next action: Stage 3 — move accidental state off the instances. Rate limiter i
 | 2026-06-12 | Xh | M4 S1 | Reproduced circuit breaker split-brain across 3 instances (F-09); derived bimodal latency / p50–p99 divergence as the production signal; decided to accept per-instance breaker state for now | verifying open-breaker behavior (DB fail-over vs client error) |
 | 2026-06-16 | Xh | M4 S1 | Traced open-breaker path in code → confirmed returns SERVICE_UNAVAILABLE; decided fail-closed is the intended behavior (D-log 2026-06-16, revises 2026-05-22 fail-open); re-derived bimodal latency from first principles and earned the concept; reaffirmed accept-split-brain (shared state deferred to next module) | Stage 2 (centralized logging / request-ID tracing) |
 | 2026-06-23 | Xh | M4 S2 | Request-ID propagation: Nginx mints `$request_id` + logs it (traced log_format) + forwards `X-Request-ID`; Node middleware reads header w/ UUID fallback, runs request inside `als.run`; logger pulls requestId from `als.getStore()` (call-time) + instanceId from process const; breaker logs the trip/fallback decision (colocated w/ cause, id attaches via als). Verification half-done — burst hit the rate limiter (all 429), concept confirmed instead | Re-running trace verification past the rate limiter; logging the other endpoints |
+| 2026-06-25 | Xh | M4 S3 | Designed durable/resumable batch processing: chunked commits over single-txn; persist input as bulk_job_items; merge bulk_job_results into it; atomic DB claim (UPDATE...WHERE status='pending') over Redis SETNX for single-winner; reaper cron keyed on stale heartbeat; heartbeat on bulk_jobs row. Design only, no code | heartbeat in-txn or separate; the actual build; k6 for chunk size + threshold |
