@@ -1,31 +1,58 @@
 ## Current Position
 
-Current Position: Module 4, Stage 3 (in progress — design done, build pending)
+Current Position: Module 4, Stage 3 (in progress — full design locked, build pending)
 Module: Module 4
 Stage: 3
-Last session: 2026-06-25
-Next action: Resolve one open design question first — heartbeat write granularity:
-bump bulk_jobs.updated_at per chunk; decide whether that bump rides inside the
-chunk's transaction or is a separate write. Then build, in order:
-(1) bulk_job_items migration — merge bulk_job_results in; one row per URL carrying
-    original_url / status / url_id / error; written at job creation BEFORE the 202.
+Last session: 2026-06-29
+Next action: Design is DONE — heartbeat granularity resolved (separate timed write,
+NOT inside the chunk txn — see D-log 2026-06-29). Migration, atomic claim, two-cron
+model, and resume query are all designed. Now BUILD, in order:
+(1) bulk_job_items migration — final shape locked:
+    id / job_id (NOT NULL) / url / url_id (BIGINT, ON DELETE SET NULL) / status /
+    created_at; partial index (job_id) WHERE status='pending'. Written at job
+    creation BEFORE the 202. Plus the backfill step (move bulk_job_results rows in,
+    drop old table) — NOT yet written.
 (2) atomic claim: UPDATE bulk_jobs SET status='processing' WHERE id=$1 AND status='pending' RETURNING id
-    (rowCount=0 → lost the race, walk away).
-(3) worker heartbeat: bump updated_at from inside the processing loop, per chunk.
-(4) reaper cron: UPDATE ... WHERE status='processing' AND updated_at < now()-threshold.
-Then k6 to pin: chunk size (cost-per-commit/fsync vs work-lost-per-crash) and
-reaper threshold (above p99 legit processing time, NOT the average).
+    (rowCount=0 → lost the race, walk away). Re-claim of a reaped job uses the SAME
+    statement — reaper resets to 'pending', so re-claim == claim.
+(3) heartbeat: separate write on a fixed timer (< threshold), bumping
+    bulk_jobs.updated_at — decoupled from chunk commits so a slow chunk can't
+    false-reap a live worker.
+(4) reaper cron (~60s): UPDATE bulk_jobs SET status='pending', updated_at=now()
+    WHERE status='processing' AND updated_at < now()-threshold. Unstrand dead workers.
+(5) dispatcher cron (~1–2s): scan status='pending', run the claim. Push-signal is an
+    optional latency optimization ONLY — poll is the correctness floor (lost signal
+    has no backstop without it).
+(6) worker resume query: SELECT id, url FROM bulk_job_items WHERE job_id=$1 AND
+    status='pending' — hits the partial index, scans only remaining work.
+Then k6 to pin: chunk size (cost-per-commit/fsync vs work-lost-per-crash). NOTE the
+reaper threshold is NO LONGER tied to processing-time p99 — it's keyed to the
+HEARTBEAT cadence (a few missed beats, e.g. 3–4× a ~5s heartbeat ≈ 15–20s), because
+a live worker now refreshes its pulse mid-chunk. (Supersedes the old "above p99 legit
+processing time" note — that logic only held when the heartbeat rode the chunk commit.)
 
 **Open questions / things I'm stuck on:**
+- ~~Heartbeat granularity: in-txn per chunk vs separate write?~~ Resolved 2026-06-29:
+  separate write on a fixed timer. Riding it inside the chunk txn makes the reaper
+  threshold hostage to chunk size → false-reaps a healthy worker on a fat chunk →
+  duplicate processor. See D-log 2026-06-29.
+- ~~Stuck job reaper not implemented~~ → now fully DESIGNED (reaper + dispatcher,
+  two crons). Still not BUILT. Jobs that crash mid-processing stay processing until
+  the reaper exists in code.
+- Known gap: failed-row error detail. Final migration has no `error` column, but a
+  failed item needs to tell the polling client WHY it failed (the 2026-06-25 merge
+  decision assumed url_id/error on the row). Decide: add an `error TEXT` column, or
+  derive failure detail elsewhere, before building (2).
+- Known gap: backfill migration (move existing bulk_job_results rows into
+  bulk_job_items, then drop the old table) not yet written — distinct from the table
+  DDL.
+- Known gap (scale, deferred): each instance runs its own dispatcher cron, so at N
+  instances N pollers race per ~2s tick. Safe via the atomic claim but wasteful —
+  defer to leader election / SKIP LOCKED (literally the M5 preview).
 - ~~Open-breaker behavior unverified — fail-over to DB or error to client?~~
   Resolved 2026-06-16: code returns SERVICE_UNAVAILABLE on breaker-open, and
   this is now the *intended* behavior (fail-closed) — see Decisions Log 2026-06-16.
   Not a bug. Revises the 2026-05-22 fail-open stance.
-- Known gap: stuck job reaper not implemented — jobs that crash mid-processing 
-  stay in pending/processing forever. Needs a cron in production.
-- ~~Known gap (Module 4): circuit breaker state is in-memory per Node process~~
-  Decided 2026-06-12: accept per-instance breaker independence — shared-in-Redis
-  is a circular dependency. See Decisions Log + F-09.
 - Known gap: 30s max request origin unconfirmed — suspect onRedisUnavailable 
   DB fallback path under extreme pool contention. connectionTimeoutMillis 
   error message mismatch means timeout isn't caught correctly. 
@@ -88,6 +115,10 @@ reaper threshold (above p99 legit processing time, NOT the average).
 | 2026-06-25 | 4 | Switch bulk job processing from single-outer-transaction (all-or-nothing) to incremental commits (durable per-chunk progress) | a worker crash near the end of a large batch rolls back all completed work, forcing a full redo and showing the polling client zero progress after minutes of waiting — a broken promise, not just wasted CPU | the job is now observable mid-flight (rows commit as they go), but we take on resumability — a reaped job must resume from where the dead worker stopped, not restart, which reintroduces the duplicate-work / double-claim problem a reaper must guard against |
 | 2026-06-25 | 4 | Persist batch input as child rows in `bulk_job_items` (one per URL, with per-item status), written at job creation | input must outlive the worker process for a reaped job to resume; per-item status makes "remaining work" a single indexed query instead of diffing inputs against `bulk_job_results` | N extra rows + N status updates per job; the input is now stored twice (request body + item rows) until the job completes |
 | 2026-06-25 | 4 | Merge `bulk_job_results` into `bulk_job_items`: one row per input URL carrying URL + status + result (`url_id`/error) | input and output were two near-identical tables; one table makes "remaining work" and "results" the same query and removes the input/output diff on resume | migration to move/backfill existing result rows; the row is now mutated in place (pending→completed) rather than insert-only, so the audit trail of "when did this flip" is lost unless we add it |
+| 2026-06-29 | 4 | Heartbeat (`updated_at` bump) is a separate write on a fixed timer, not ridden inside the chunk transaction | coupling heartbeat to chunk commit makes the reaper threshold hostage to chunk size — a slow chunk false-reaps a healthy worker, spawning a duplicate processor | heartbeat can persist after the work it implied rolls back, but that's harmless — resumption keys off committed item status, not the heartbeat, so a stale pulse only delays the reap by seconds |
+| 2026-06-29 | 4 | Partial index on `bulk_job_items (job_id) WHERE status='pending'` for the resume query, over a composite `(job_id, status)` | high-write table; only pending rows are ever queried on the hot path. The partial index materializes only pending entries and drops them as items complete, keeping the index small and write cost low | index is unusable for non-pending queries (e.g. "show completed items") — acceptable, that's a cold path |
+| 2026-06-29 | 4 | Two separate crons — reaper (~60s, unstrand dead workers) and dispatcher (~1–2s, pick up pending jobs) — over one fused cron | different staleness tolerances: a dead job waiting 60s to be reaped is harmless, but a new job waiting 60s to *start* is not. Fusing forces both to the fast interval, wasting scans on dead-worker detection every tick | two crons to maintain instead of one; at N instances each runs its own dispatcher, so N pollers race per tick — safe via atomic claim but wasteful at scale (defer to leader election / `SKIP LOCKED`) |
+| 2026-06-29 | 4 | `bulk_job_items.url_id` is `ON DELETE SET NULL` (not CASCADE) | the item row is a historical record of what the batch contained — deleting a shortened URL months later shouldn't erase the fact it was part of bulk job #847. SET NULL keeps the row, just nulls the pointer (same shape as a failed row's null url_id) | creates a distinct state: `status='completed'` + null `url_id` means "succeeded once, result since deleted" — code reading results must treat null url_id as "no live result" regardless of status |
 
 ---
 
@@ -229,7 +260,7 @@ reaper threshold (above p99 legit processing time, NOT the average).
 
 ### Module 4
 - [ ] Every piece of accidental state in a single-instance app
-- [ ] Why distributed locks are not as simple as `SETNX`
+- [x] Why distributed locks are not as simple as `SETNX` — a TTL releases on a blind clock: too short → it frees the lock under a worker that's still alive (two owners, duplicate work); too long → a genuinely dead worker's job stays frozen for the whole TTL, and each failed retry adds another full TTL. There's no safe middle because the TTL is guessing at something it can't observe — "is the worker alive?". A correct lock needs a *liveness signal*. The Postgres claim (`UPDATE...WHERE status='pending'`) has no timer — the row stays 'processing' until something *deliberately* moves it, so two owners is structurally impossible; the dead-worker case is handled by the reaper, which *checks a heartbeat* (observes liveness) rather than counting down a clock. The reaper is "a TTL done right" — its threshold is keyed to the heartbeat cadence (constant), not to job length.
 - [ ] Fencing tokens — what they prevent that TTLs can't
 - [ ] Stateless vs stateful services, sharply
 - [x] Bimodal latency / circuit-breaker split-brain — why per-instance breaker state splits one endpoint's latency histogram into two humps (fast-fail open breaker vs slow-fail closed breaker waiting out commandTimeout), and why a single p95 lands in the empty valley between them and lies
@@ -321,3 +352,4 @@ reaper threshold (above p99 legit processing time, NOT the average).
 | 2026-06-16 | Xh | M4 S1 | Traced open-breaker path in code → confirmed returns SERVICE_UNAVAILABLE; decided fail-closed is the intended behavior (D-log 2026-06-16, revises 2026-05-22 fail-open); re-derived bimodal latency from first principles and earned the concept; reaffirmed accept-split-brain (shared state deferred to next module) | Stage 2 (centralized logging / request-ID tracing) |
 | 2026-06-23 | Xh | M4 S2 | Request-ID propagation: Nginx mints `$request_id` + logs it (traced log_format) + forwards `X-Request-ID`; Node middleware reads header w/ UUID fallback, runs request inside `als.run`; logger pulls requestId from `als.getStore()` (call-time) + instanceId from process const; breaker logs the trip/fallback decision (colocated w/ cause, id attaches via als). Verification half-done — burst hit the rate limiter (all 429), concept confirmed instead | Re-running trace verification past the rate limiter; logging the other endpoints |
 | 2026-06-25 | Xh | M4 S3 | Designed durable/resumable batch processing: chunked commits over single-txn; persist input as bulk_job_items; merge bulk_job_results into it; atomic DB claim (UPDATE...WHERE status='pending') over Redis SETNX for single-winner; reaper cron keyed on stale heartbeat; heartbeat on bulk_jobs row. Design only, no code | heartbeat in-txn or separate; the actual build; k6 for chunk size + threshold |
+| 2026-06-29 | Xh | M4 S3 | Finished the resumable-batch design: heartbeat = separate timed write (not in chunk txn); finalized bulk_job_items migration (job_id NOT NULL, url_id ON DELETE SET NULL, partial index WHERE status='pending'); walked the atomic-claim row-lock semantics (re-claim == claim after reaper resets to pending); split reaper (~60s) from dispatcher (~1–2s) crons; established push-signal is optional, poll is the correctness floor; resume query = items WHERE job_id AND status='pending'. Earned the "SETNX isn't simple" concept (TTL trap both directions; reaper = TTL done right via heartbeat). Design fully locked, no code yet | the actual build (migration→claim→crons→resume); the failed-row `error` column decision; the backfill migration; k6 for chunk size |

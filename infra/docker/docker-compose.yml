@@ -44,6 +44,11 @@ services:
     environment:
       PGADMIN_DEFAULT_EMAIL: admin@example.com
       PGADMIN_DEFAULT_PASSWORD: shortn
+      # Local rig only: relax cookie/CSRF binding. Docker NAT can shift the
+      # client IP between page-load and form-submit, invalidating the CSRF
+      # token mid-flow ("CSRF session token is missing"). Do NOT use exposed.
+      PGADMIN_CONFIG_ENHANCED_COOKIE_PROTECTION: "False"
+      PGADMIN_CONFIG_WTF_CSRF_ENABLED: "False"
     ports:
       - "5050:80"
     depends_on:
