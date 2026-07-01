@@ -438,3 +438,95 @@ export async function modifyShortUrl(
 
   return result.rowCount && result.rows[0] ? result.rows[0] : null;
 }
+
+export async function processBatchInsertJobV2(
+  jobId: string,
+  urls: string[],
+  webhookUrl?: string,
+): Promise<void> {
+  const client = await pool.connect();
+  let successCount = 0;
+  let failedCount = 0;
+
+  try {
+    await client.query("BEGIN");
+
+    await client.query(`UPDATE bulk_jobs SET status = $1 WHERE id = $2`, [
+      "processing",
+      jobId,
+    ]);
+
+    for (const url of urls) {
+      try {
+        await client.query("SAVEPOINT sp");
+        const result = await client.query(
+          `INSERT INTO urls (code, original_url) VALUES ($1, $2) ON CONFLICT (original_url) DO UPDATE SET original_url = EXCLUDED.original_url RETURNING *`,
+          [randomBytes(6).toString("hex"), url],
+        );
+        await client.query(
+          `INSERT INTO bulk_job_results (job_id, url_id, status, original_url, error) VALUES ($1, $2, $3, $4, $5)`,
+          [jobId, result?.rows[0]?.id, "completed", url, null],
+        );
+        await client.query("RELEASE SAVEPOINT sp");
+        successCount++;
+      } catch (error) {
+        await client.query("ROLLBACK TO SAVEPOINT sp");
+        await client.query(
+          `INSERT INTO bulk_job_results (job_id, url_id, status, original_url, error) VALUES ($1, $2, $3, $4, $5)`,
+          [
+            jobId,
+            null,
+            "failed",
+            url,
+            error instanceof Error ? error.message : "Unknown error",
+          ],
+        );
+        failedCount++;
+      }
+    }
+    let finalStatus: string;
+    if (failedCount === 0) {
+      finalStatus = "completed";
+    } else if (successCount === 0) {
+      finalStatus = "failed";
+    } else {
+      finalStatus = "partial";
+    }
+    await client.query(`UPDATE bulk_jobs SET status = $1 WHERE id = $2`, [
+      finalStatus,
+      jobId,
+    ]);
+
+    await client.query("COMMIT");
+
+    if (webhookUrl) {
+      const urlsResult = await client.query(
+        `SELECT u.code, u.original_url, br.status, br.error FROM bulk_job_results br
+         LEFT JOIN urls u ON br.url_id = u.id
+         WHERE br.job_id = $1`,
+        [jobId],
+      );
+
+      const payload: BatchJobStatusApi = {
+        jobId,
+        status: finalStatus,
+        successCount,
+        failedCount,
+        results: urlsResult.rows.map((row) => ({
+          shortenedUrl: row.code
+            ? new URL(`/${row.code}`, process.env.PUBLIC_BASE_URL).href
+            : null,
+          originalUrl: row.original_url,
+          status: row.status,
+          error: row.error,
+        })),
+      };
+      await webhookNotification(webhookUrl, payload, 0);
+    }
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
+  }
+}

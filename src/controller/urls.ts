@@ -17,6 +17,7 @@ import {
   fetchOriginalUrl,
   modifyShortUrl,
   processBatchInsertJob,
+  processBatchInsertJobV2,
   saveShortUrl,
 } from "../services/urls.js";
 import { logger } from "../utils.ts/logger.js";
@@ -161,6 +162,29 @@ export async function updateShortUrl(
     });
   } catch (err) {
     console.error("Error updating URL:", err);
+    next(new AppError("Internal Server Error", 500, "INTERNAL_ERROR"));
+  }
+}
+
+export async function createBatchShortUrlV2(
+  req: Request<Record<string, string>, unknown, CreateBatchUrl>,
+  res: Response,
+  next: NextFunction,
+) {
+  const { urls, webhookUrl } = req.body;
+
+  try {
+    const jobId = await createBatchInsertJob(webhookUrl);
+    processBatchInsertJobV2(
+      jobId,
+      urls.map((u) => u.url),
+      webhookUrl,
+    ).catch((err) => {
+      console.error("Error processing batch insert job:", err);
+    });
+    res.status(202).json({ jobId });
+  } catch (err) {
+    console.error("Error inserting URLs:", err);
     next(new AppError("Internal Server Error", 500, "INTERNAL_ERROR"));
   }
 }

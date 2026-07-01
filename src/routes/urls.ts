@@ -1,6 +1,7 @@
 import express, { Router, type Router as ExpressRouter } from "express";
 import {
   createBatchShortUrl,
+  createBatchShortUrlV2,
   createShortUrl,
   getAllUrls,
   getBatchJobStatus,
@@ -46,5 +47,13 @@ router.get(
 // PUT is idempotent as it replaces the resource at the specified URL with the provided data.
 // idepotencyMiddleware is not needed for PUT requests as they are inherently idempotent.
 router.put("/shorten/:code", validateSchema(UpdateUrlSchema), updateShortUrl);
+
+router.post(
+  "/shorten/batch-v2",
+  express.json({ limit: "10mb" }), // Adjust the limit as needed
+  validateSchema(createBatchUrlSchema),
+  idempotencyMiddleware,
+  createBatchShortUrlV2,
+);
 
 export default router;
