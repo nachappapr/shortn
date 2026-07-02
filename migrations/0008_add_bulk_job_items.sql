@@ -11,3 +11,4 @@ CREATE TABLE bulk_job_items(
 CREATE INDEX idx_items_resume ON bulk_job_items (job_id) WHERE status = 'pending';
 
 INSERT INTO bulk_job_items(id,job_id,url,url_id,status,error,created_at) SELECT id,job_id,original_url,url_id,status,error,created_at FROM bulk_job_results;
+

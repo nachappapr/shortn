@@ -19,6 +19,7 @@ import {
   processBatchInsertJob,
   processBatchInsertJobV2,
   saveShortUrl,
+  createBatchInsertJobV2,
 } from "../services/urls.js";
 import { logger } from "../utils.ts/logger.js";
 
@@ -174,7 +175,10 @@ export async function createBatchShortUrlV2(
   const { urls, webhookUrl } = req.body;
 
   try {
-    const jobId = await createBatchInsertJob(webhookUrl);
+    const jobId = await createBatchInsertJobV2(
+      urls.map((u) => u.url),
+      webhookUrl,
+    );
     processBatchInsertJobV2(
       jobId,
       urls.map((u) => u.url),

@@ -1,30 +1,42 @@
 ## Current Position
-Current Position: Module 4, Stage 3 (in progress — migration BUILT + backfilled; claim/heartbeat/reaper designed, coding next)
+Current Position: Module 4, Stage 3 (in progress — worker unit CODED, happy-path GREEN; crash test next)
 Module: Module 4
 Stage: 3
-Last session: 2026-06-30
-Next action: Migration BUILT & VERIFIED (bulk_job_items created w/ error TEXT col +
-partial index; backfill bulk_job_results→bulk_job_items done, 26→26 verified; old
-table frozen, drop deferred). Claim + heartbeat + reaper DESIGNED and defended this
-session — CODE them next as one worker unit (test the handoffs, not the pieces):
+Last session: 2026-07-02
+Next action: Worker unit CODED & happy-path VERIFIED this session (60 URLs → 60
+completed, bulk_jobs → 'completed'). Two worker versions now exist, deliberately, for
+contrast:
+  - processBatchInsertJob   — PER-ROW transaction (BEGIN/INSERT/UPDATE/COMMIT per URL):
+    per-row failure isolation, N round trips. The correctness-first shape.
+  - processBatchInsertJobV2 — TRUE BATCH (one CTE per chunk, all-or-nothing per chunk):
+    fewer commits (throughput), but one bad row condemns the whole chunk + loses per-row
+    error identity. Kept as a learning artifact.
+Both share: atomic claim (UPDATE...WHERE id AND status='pending' RETURNING id, branch on
+rowCount===0 → return); heartbeat setInterval(5s) started AFTER claim wins, clearInterval
+in finally; terminal status derived from a POST-LOOP aggregate query over bulk_job_items
+(NOT in-memory counters — a reaped worker only has its own partial counts in RAM), fed to
+getFInalCompletionStatus → completed/partial/failed.
+
+CRASH TEST IS THE ACTUAL POINT OF STAGE 3 — still ahead, do it next:
 (1) ✅ bulk_job_items migration + backfill — DONE 2026-06-30.
-(2) atomic claim — DESIGNED: branch on rowCount===0 → walk away; RETURNING id feeds
-    the winner. Not yet coded.
-(3) heartbeat — DESIGNED: setInterval every 5s vs 15s reaper threshold (3× margin);
-    clearInterval in finally (useEffect-cleanup shape). Not yet coded.
-(4) reaper cron (~60s) — DESIGNED: predicate needs BOTH status='processing' AND
-    updated_at stale; slow reaper is fine because a delayed reap is cheap (work paused
-    not lost). Not yet coded.
-(5) dispatcher cron (~1–2s) — DESIGNED: scan status='pending', run the claim. Push-
-    signal is an optional latency optimization ONLY — poll is the correctness floor
-    (lost signal has no backstop without it). Not yet coded.
-(6) worker resume query — DESIGNED: SELECT id, url FROM bulk_job_items WHERE job_id=$1
-    AND status='pending' — hits the partial index, scans only remaining work. Not yet
-    coded.
-Then k6 to pin: chunk size (cost-per-commit/fsync vs work-lost-per-crash). NOTE the
-reaper threshold is keyed to the HEARTBEAT cadence (a few missed beats — e.g. 3× a 5s
-heartbeat ≈ 15s), NOT to processing-time p99, because a live worker refreshes its
-pulse mid-chunk (see D-log 2026-06-29).
+(2) ✅ atomic claim — CODED & running.
+(3) ✅ heartbeat (5s, cleared in finally) — CODED & running.
+(4) reaper cron (~60s) — DESIGNED, NOT YET CODED. Predicate: status='processing' AND
+    updated_at < now() - interval '15s'. (< not >: stale = pulse fell BEHIND cutoff.)
+(5) dispatcher cron (~1–2s) — DESIGNED, NOT YET CODED. Scan status='pending', run claim.
+(6) worker resume query — DESIGNED (already implicit in the WHERE status='pending' item
+    scan), NOT YET wired as the resume path.
+Crash-test recipe (agreed this session): 60-URL body, small chunk, add a TEST-ONLY sleep
+after each chunk commit so the job spans real wall-clock time (the sleep buys a mid-flight
+kill window — the 60s reaper interval already guarantees the 15s pulse goes stale, so no
+need to engineer staleness). kill -9 mid-job → watch reaper flip processing→pending on a
+later sweep (from a SIBLING instance, not the dead box) → dispatcher re-claim → resume
+query picks up ONLY the uncompleted items. If V2 (batch) is killed mid-chunk, whole chunk
+returns pending (coarse); per-row returns row-granular. Rip the sleep out after.
+Then k6 to pin chunk size (cost-per-commit/fsync vs work-lost-per-crash).
+
+DON'T FORGET (carried): the bulk_job_results DROP TABLE is still a separate later migration
+AFTER API cutover.
 
 **Open questions / things I'm stuck on:**
 - ~~Heartbeat granularity: in-txn per chunk vs separate write?~~ Resolved 2026-06-29:
@@ -116,6 +128,8 @@ pulse mid-chunk (see D-log 2026-06-29).
 | 2026-06-29 | 4 | `bulk_job_items.url_id` is `ON DELETE SET NULL` (not CASCADE) | the item row is a historical record of what the batch contained — deleting a shortened URL months later shouldn't erase the fact it was part of bulk job #847. SET NULL keeps the row, just nulls the pointer (same shape as a failed row's null url_id) | creates a distinct state: `status='completed'` + null `url_id` means "succeeded once, result since deleted" — code reading results must treat null url_id as "no live result" regardless of status |
 | 2026-06-30 | 4 | Failed-row error detail lives in a nullable `error TEXT` column on `bulk_job_items`, not derived elsewhere | the row is the complete per-item lifecycle record; status + error + url_id on one row makes results and resume the same indexed scan with no join | another nullable column whose meaning is only legible in combination with status — the client/result-builder must branch on status first, not on column nullity |
 | 2026-06-30 | 4 | Backfill `bulk_job_results` → `bulk_job_items` via expand-migrate-contract; defer the `DROP TABLE` to a later migration after API cutover, not the migration that creates the new table | during a rolling deploy both old and new code run simultaneously — dropping the old table immediately fails any in-flight request still on the old path. Keeping both tables until all readers/writers are migrated means no instance ever finds its expected table missing | a window where both tables coexist and the old one must be treated as frozen (no new writes), plus a second migration to remember later for the drop |
+| 2026-07-02 | 4 | Terminal job status (`completed`/`partial`/`failed`) is derived from a post-loop aggregate query over `bulk_job_items`, NOT from in-memory `successCount`/`failedCount` counters incremented during the loop | the job is resumable — a reaped worker inherits a job a dead worker already made progress on, and starts with its counters at zero in fresh RAM. Counters only ever reflect the *current* worker's slice, so a resumed worker would stamp `completed` over a job that actually has failures the dead worker recorded in the table. The table is the source of truth; RAM dies with the process | one extra aggregate query per job at the end; the verdict is only as correct as the committed row statuses (fine — that's exactly what durability bought us) |
+| 2026-07-02 | 4 | Keep BOTH a per-row-transaction worker (`processBatchInsertJob`) and a true-batch CTE worker (`processBatchInsertJobV2`); for `shortn`'s workload the per-row shape is the correct default | URL inserts fail *independently* (one bad URL is not the batch's shared fate), so a bulk/all-or-nothing statement condemns all N rows for one bad row AND collapses per-row error identity (every failed row gets the same error text). Per-row isolation is a *correctness* property already decided ("19 good, 1 fails"); batch buys *throughput* (fewer commits/fsync) which is unmeasurable at 60 URLs. Kept the batch version only as a learning artifact to feel the contrast | per-row pays N round trips per job (invisible at this scale, real at 10k+); maintaining two code paths that must not drift. Batch/bulk is the right tool only when the batch shares a single fate — not here |
 
 ---
 
@@ -352,3 +366,4 @@ pulse mid-chunk (see D-log 2026-06-29).
 | 2026-06-25 | Xh | M4 S3 | Designed durable/resumable batch processing: chunked commits over single-txn; persist input as bulk_job_items; merge bulk_job_results into it; atomic DB claim (UPDATE...WHERE status='pending') over Redis SETNX for single-winner; reaper cron keyed on stale heartbeat; heartbeat on bulk_jobs row. Design only, no code | heartbeat in-txn or separate; the actual build; k6 for chunk size + threshold |
 | 2026-06-29 | Xh | M4 S3 | Finished the resumable-batch design: heartbeat = separate timed write (not in chunk txn); finalized bulk_job_items migration (job_id NOT NULL, url_id ON DELETE SET NULL, partial index WHERE status='pending'); walked the atomic-claim row-lock semantics (re-claim == claim after reaper resets to pending); split reaper (~60s) from dispatcher (~1–2s) crons; established push-signal is optional, poll is the correctness floor; resume query = items WHERE job_id AND status='pending'. Earned the "SETNX isn't simple" concept (TTL trap both directions; reaper = TTL done right via heartbeat). Design fully locked, no code yet | the actual build (migration→claim→crons→resume); the failed-row `error` column decision; the backfill migration; k6 for chunk size |
 | 2026-06-30 | Xh | M4 S3 | Resolved failed-row error col (nullable error TEXT on bulk_job_items, D-log); built + verified bulk_job_items migration + partial index; wrote & ran backfill (expand-migrate-contract, 26→26, old table frozen, drop deferred); designed+defended atomic claim (rowCount signal, why SELECT-then-UPDATE races), heartbeat (5s/15s 3× margin, clearInterval in finally), reaper (both-predicate, slow-is-fine tolerance); earned the atomic-claim concept | coding claim+heartbeat+reaper; dispatcher; resume query; k6 chunk size |
+| 2026-07-02 | Xh | M4 S3 | CODED the worker unit + happy-path green (60→60 completed). Traced the full row lifecycle & every seam by hand before coding (heartbeat cleanup on the 3 exit paths, kill -9 = pulse-stops-itself, reaper caught by a sibling instance, resume via committed item status). Fixed 3 bugs in review: heartbeat 15s→5s (restore 3× margin), bare UPDATE → atomic claim w/ rowCount guard, per-job commit → per-row/per-chunk transactions on a checked-out client (release in finally). Killed the dead outer chunk loop; kept per-row + a true-batch V2 for contrast. Replaced in-memory counters w/ post-loop aggregate for terminal status (resumability). Generated 60-URL test body | THE CRASH TEST (kill -9 → reaper → dispatcher → resume) — the actual point of Stage 3; reaper+dispatcher crons not yet coded; k6 chunk size |

@@ -9,6 +9,7 @@ import { AppError } from "../errors/app.error.js";
 import { CircuitBreakerError } from "../errors/circuit.error.js";
 import redis, { redisCircuitBreaker } from "../db/redis.js";
 import { logger } from "../utils.ts/logger.js";
+import { getFInalCompletionStatus } from "../utils.ts/url.js";
 
 export async function saveShortUrl(
   originalUrl: string,
@@ -439,94 +440,104 @@ export async function modifyShortUrl(
   return result.rowCount && result.rows[0] ? result.rows[0] : null;
 }
 
+export async function createBatchInsertJobV2(
+  urls: string[],
+  webhookUrl?: string,
+): Promise<string> {
+  const result = await pool.query(
+    `INSERT INTO bulk_jobs (status,webhook_url) VALUES ($1, $2) RETURNING id`,
+    ["pending", webhookUrl || null],
+  );
+  await pool.query(
+    `INSERT INTO bulk_job_items (job_id, url) 
+    SELECT $1, unnest($2::text[])`,
+    [result.rows[0].id, urls],
+  );
+  return result.rows[0].id;
+}
+
+async function bumpUpdatedAt(jobId: string): Promise<void> {
+  await pool.query(`UPDATE bulk_jobs SET updated_at = NOW() WHERE id = $1`, [
+    jobId,
+  ]);
+}
+
 export async function processBatchInsertJobV2(
   jobId: string,
   urls: string[],
   webhookUrl?: string,
 ): Promise<void> {
   const client = await pool.connect();
-  let successCount = 0;
-  let failedCount = 0;
+  const batch_size = 20;
+  let heartBeatInterval: NodeJS.Timeout | undefined;
 
   try {
-    await client.query("BEGIN");
+    const result = await client.query(
+      `UPDATE bulk_jobs SET status = $1 WHERE id = $2 and status = $3 RETURNING id`,
+      ["processing", jobId, "pending"],
+    );
 
-    await client.query(`UPDATE bulk_jobs SET status = $1 WHERE id = $2`, [
-      "processing",
-      jobId,
-    ]);
+    if (result.rowCount === 0) {
+      return; // Job is already being processed or completed
+    }
 
-    for (const url of urls) {
+    heartBeatInterval = setInterval(() => {
+      bumpUpdatedAt(jobId).catch((error) => {
+        console.error("Error updating bulk job timestamp:", error);
+      });
+    }, 5000);
+
+    for (let i = 0; i < urls.length; i += batch_size) {
+      const batch = urls.slice(i, i + batch_size);
       try {
-        await client.query("SAVEPOINT sp");
-        const result = await client.query(
-          `INSERT INTO urls (code, original_url) VALUES ($1, $2) ON CONFLICT (original_url) DO UPDATE SET original_url = EXCLUDED.original_url RETURNING *`,
-          [randomBytes(6).toString("hex"), url],
-        );
         await client.query(
-          `INSERT INTO bulk_job_results (job_id, url_id, status, original_url, error) VALUES ($1, $2, $3, $4, $5)`,
-          [jobId, result?.rows[0]?.id, "completed", url, null],
+          `WITH inserted AS (
+          INSERT INTO urls (code, original_url)
+          SELECT unnest($1::text[]), unnest($2::text[])
+          ON CONFLICT (original_url) DO UPDATE SET original_url = EXCLUDED.original_url
+          RETURNING id, original_url
+        )
+        UPDATE bulk_job_items bjt
+        SET url_id = inserted.id, status = 'completed'
+        FROM inserted
+        WHERE bjt.url = inserted.original_url AND bjt.job_id = $3
+      `,
+          [batch.map(() => randomBytes(6).toString("hex")), batch, jobId],
         );
-        await client.query("RELEASE SAVEPOINT sp");
-        successCount++;
       } catch (error) {
-        await client.query("ROLLBACK TO SAVEPOINT sp");
         await client.query(
-          `INSERT INTO bulk_job_results (job_id, url_id, status, original_url, error) VALUES ($1, $2, $3, $4, $5)`,
+          `UPDATE bulk_job_items SET status = 'failed', error = $1 WHERE job_id = $2 AND url = ANY($3::text[]) AND status = 'pending'`,
           [
-            jobId,
-            null,
-            "failed",
-            url,
             error instanceof Error ? error.message : "Unknown error",
+            jobId,
+            batch,
           ],
         );
-        failedCount++;
       }
     }
-    let finalStatus: string;
-    if (failedCount === 0) {
-      finalStatus = "completed";
-    } else if (successCount === 0) {
-      finalStatus = "failed";
-    } else {
-      finalStatus = "partial";
-    }
+    const finalStatusResult = await client.query(
+      `SELECT 
+        COUNT(*) FILTER (WHERE status = 'completed') AS success_count,
+        COUNT(*) FILTER (WHERE status = 'failed') AS failed_count
+       FROM bulk_job_items 
+       WHERE job_id = $1`,
+      [jobId],
+    );
+
+    const successCount = parseInt(finalStatusResult.rows[0].success_count, 10);
+    const failedCount = parseInt(finalStatusResult.rows[0].failed_count, 10);
+
+    const finalStatus = getFInalCompletionStatus(successCount, failedCount);
+
     await client.query(`UPDATE bulk_jobs SET status = $1 WHERE id = $2`, [
       finalStatus,
       jobId,
     ]);
-
-    await client.query("COMMIT");
-
-    if (webhookUrl) {
-      const urlsResult = await client.query(
-        `SELECT u.code, u.original_url, br.status, br.error FROM bulk_job_results br
-         LEFT JOIN urls u ON br.url_id = u.id
-         WHERE br.job_id = $1`,
-        [jobId],
-      );
-
-      const payload: BatchJobStatusApi = {
-        jobId,
-        status: finalStatus,
-        successCount,
-        failedCount,
-        results: urlsResult.rows.map((row) => ({
-          shortenedUrl: row.code
-            ? new URL(`/${row.code}`, process.env.PUBLIC_BASE_URL).href
-            : null,
-          originalUrl: row.original_url,
-          status: row.status,
-          error: row.error,
-        })),
-      };
-      await webhookNotification(webhookUrl, payload, 0);
-    }
-  } catch (err) {
-    await client.query("ROLLBACK");
-    throw err;
+  } catch (error) {
+    // do we set the status to failed or pending?
+    throw error;
   } finally {
+    clearInterval(heartBeatInterval);
     client.release();
   }
 }
