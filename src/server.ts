@@ -9,6 +9,8 @@ import redis from "./db/redis.js";
 import { v4 as uuidv4 } from "uuid";
 import als from "./utils.ts/context.js";
 import { logger } from "./utils.ts/logger.js";
+import { scheduleReaperCronJob } from "./cron/reaper-cron.js";
+import { scheduleWorkerCronJob } from "./cron/worker-cron.js";
 
 dotenv.config();
 
@@ -54,6 +56,8 @@ app.use(notFoundMiddleware);
 app.use(errorMiddleware);
 
 const server = app.listen(PORT, () => {
+  scheduleReaperCronJob();
+  scheduleWorkerCronJob();
   console.log(`Server is running on port ${PORT}`);
 });
 

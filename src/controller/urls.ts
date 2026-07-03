@@ -179,11 +179,7 @@ export async function createBatchShortUrlV2(
       urls.map((u) => u.url),
       webhookUrl,
     );
-    processBatchInsertJobV2(
-      jobId,
-      urls.map((u) => u.url),
-      webhookUrl,
-    ).catch((err) => {
+    processBatchInsertJobV2(jobId, webhookUrl).catch((err) => {
       console.error("Error processing batch insert job:", err);
     });
     res.status(202).json({ jobId });

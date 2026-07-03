@@ -464,7 +464,6 @@ async function bumpUpdatedAt(jobId: string): Promise<void> {
 
 export async function processBatchInsertJobV2(
   jobId: string,
-  urls: string[],
   webhookUrl?: string,
 ): Promise<void> {
   const client = await pool.connect();
@@ -473,13 +472,20 @@ export async function processBatchInsertJobV2(
 
   try {
     const result = await client.query(
-      `UPDATE bulk_jobs SET status = $1 WHERE id = $2 and status = $3 RETURNING id`,
+      `UPDATE bulk_jobs SET status = $1, updated_at = NOW() WHERE id = $2 and status = $3 RETURNING id`,
       ["processing", jobId, "pending"],
     );
 
     if (result.rowCount === 0) {
       return; // Job is already being processed or completed
     }
+
+    const urlResult = await client.query(
+      `SELECT url FROM bulk_job_items WHERE job_id = $1 AND status = 'pending'`,
+      [jobId],
+    );
+
+    const urls = urlResult.rows.map((row) => row.url);
 
     heartBeatInterval = setInterval(() => {
       bumpUpdatedAt(jobId).catch((error) => {
