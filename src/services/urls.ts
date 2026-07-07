@@ -11,6 +11,14 @@ import redis, { redisCircuitBreaker } from "../db/redis.js";
 import { logger } from "../utils.ts/logger.js";
 import { getFInalCompletionStatus } from "../utils.ts/url.js";
 
+const CHUNK_SLEEP_TIME_MS = process.env.CHUNK_SLEEP_TIME_MS
+  ? parseInt(process.env.CHUNK_SLEEP_MS!, 10)
+  : undefined;
+
+const maxAttempts = process.env.MAX_ATTEMPTS
+  ? parseInt(process.env.MAX_ATTEMPTS!, 10)
+  : 3;
+
 export async function saveShortUrl(
   originalUrl: string,
 ): Promise<SaveShortUrlApi | null> {
@@ -466,13 +474,13 @@ export async function processBatchInsertJobV2(
   jobId: string,
   webhookUrl?: string,
 ): Promise<void> {
-  const client = await pool.connect();
   const batch_size = 20;
   let heartBeatInterval: NodeJS.Timeout | undefined;
+  let attempts = 0;
 
   try {
-    const result = await client.query(
-      `UPDATE bulk_jobs SET status = $1, updated_at = NOW() WHERE id = $2 and status = $3 RETURNING id`,
+    const result = await pool.query(
+      `UPDATE bulk_jobs SET status = $1, updated_at = NOW(), attempts = attempts + 1 WHERE id = $2 and status = $3 RETURNING attempts`,
       ["processing", jobId, "pending"],
     );
 
@@ -480,7 +488,17 @@ export async function processBatchInsertJobV2(
       return; // Job is already being processed or completed
     }
 
-    const urlResult = await client.query(
+    attempts = result.rows[0]?.attempts || 0;
+
+    if (attempts > maxAttempts) {
+      await pool.query(
+        `UPDATE bulk_jobs SET status = 'failed', error=coalesce(error, 'exceeded max attempts — worker crashed without recording an error') WHERE id = $1`,
+        [jobId],
+      );
+      return;
+    }
+
+    const urlResult = await pool.query(
       `SELECT url FROM bulk_job_items WHERE job_id = $1 AND status = 'pending'`,
       [jobId],
     );
@@ -496,7 +514,7 @@ export async function processBatchInsertJobV2(
     for (let i = 0; i < urls.length; i += batch_size) {
       const batch = urls.slice(i, i + batch_size);
       try {
-        await client.query(
+        await pool.query(
           `WITH inserted AS (
           INSERT INTO urls (code, original_url)
           SELECT unnest($1::text[]), unnest($2::text[])
@@ -510,8 +528,14 @@ export async function processBatchInsertJobV2(
       `,
           [batch.map(() => randomBytes(6).toString("hex")), batch, jobId],
         );
+
+        if (CHUNK_SLEEP_TIME_MS) {
+          await new Promise((resolve) =>
+            setTimeout(resolve, CHUNK_SLEEP_TIME_MS),
+          );
+        }
       } catch (error) {
-        await client.query(
+        await pool.query(
           `UPDATE bulk_job_items SET status = 'failed', error = $1 WHERE job_id = $2 AND url = ANY($3::text[]) AND status = 'pending'`,
           [
             error instanceof Error ? error.message : "Unknown error",
@@ -521,7 +545,7 @@ export async function processBatchInsertJobV2(
         );
       }
     }
-    const finalStatusResult = await client.query(
+    const finalStatusResult = await pool.query(
       `SELECT 
         COUNT(*) FILTER (WHERE status = 'completed') AS success_count,
         COUNT(*) FILTER (WHERE status = 'failed') AS failed_count
@@ -535,15 +559,26 @@ export async function processBatchInsertJobV2(
 
     const finalStatus = getFInalCompletionStatus(successCount, failedCount);
 
-    await client.query(`UPDATE bulk_jobs SET status = $1 WHERE id = $2`, [
-      finalStatus,
-      jobId,
-    ]);
+    await pool.query(
+      `UPDATE bulk_jobs SET status = $1, error = CASE WHEN $1 IN ('completed','partial') THEN NULL ELSE error END WHERE id = $2`,
+      [finalStatus, jobId],
+    );
   } catch (error) {
-    // do we set the status to failed or pending?
-    throw error;
+    const errorMessage =
+      error instanceof Error ? error.message : "Unknown error";
+
+    if (attempts <= maxAttempts) {
+      await pool.query(
+        `UPDATE bulk_jobs SET status = 'pending', error = $1 WHERE id = $2`,
+        [errorMessage, jobId],
+      );
+    } else {
+      await pool.query(
+        `UPDATE bulk_jobs SET status = 'failed', error = $1 WHERE id = $2`,
+        [errorMessage, jobId],
+      );
+    }
   } finally {
     clearInterval(heartBeatInterval);
-    client.release();
   }
 }

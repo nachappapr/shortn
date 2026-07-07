@@ -1,51 +1,48 @@
 ## Current Position
-Current Position: Module 4, Stage 3 ✅ COMPLETE — crash test PASSED on real containers.
+Current Position: Module 4, Stage 3 — post-crash-test hardening CODED, verification pending.
 Module: Module 4
-Stage: 3 (done) → next is Stage 4 (break the fix) or k6 chunk-size tuning
-Last session: 2026-07-03
-Next action: THE CRASH TEST PASSED. Killed instances mid-job (kill -9 / docker kill),
-a SURVIVING instance's reaper flipped processing→pending, its dispatcher re-claimed,
-the resume path picked up ONLY uncompleted items. Verified against Postgres:
-  - bulk_job_items: 60/60 'completed', 0 'pending'
-  - urls: 0 duplicate original_url across the job (resume did NOT redo committed work)
-  - bulk_jobs.status: 'completed' (derived from post-loop aggregate, not RAM counters)
-All three pieces now CODED, RUNNING, and PROVEN:
-  - worker (processBatchInsertJobV2): claim-first (sets updated_at=NOW() in the claim so
-    the claim IS the first heartbeat), self-fetches its work from bulk_job_items
-    WHERE status='pending' (no urls argument — fresh & resume are ONE path), heartbeat
-    setInterval(5s) after claim wins, clearInterval in finally, per-chunk txn on a
-    checked-out client, terminal status from POST-LOOP aggregate.
-  - reaper cron (node-cron, 6-field "0 * * * * *" ≈ 60s): atomic flip
-    UPDATE bulk_jobs SET status='pending' WHERE status='processing'
-    AND updated_at < NOW() - INTERVAL '15 seconds'. Logs rowCount>0 as crash-test proof.
-  - dispatcher cron (node-cron, 6-field "*/2 * * * * *" ≈ 2s): SELECT id
-    WHERE status='pending' (DISCOVERY ONLY, no claim), loops firing
-    processBatchInsertJobV2(id) WITHOUT await, .catch on each (unhandled-rejection guard).
-Both crons wired at instance boot, running on ALL 3 instances; the per-job atomic claim
-is the referee that makes over-selection harmless.
+Stage: 3 (hardening) → verify cap behavior, then Stage 4 (break the fix)
+Last session: 2026-07-07
+Next action: RUN THE TWO CAP VERIFICATION TESTS before anything else:
+  - Run A (catchable): FORCE_JOB_ERROR=1 → job must end 'failed' after exactly
+    maxAttempts work runs, error = the forced message (catch overwrites fresh each run).
+  - Run B (silent): CHUNK_SLEEP_MS=5000, docker kill the claiming instance 3x →
+    job must end 'failed' via run 4's cap branch, error = the generic COALESCE epitaph.
+  Assert final bulk_jobs row (status, attempts, error) for both. If Run B shows a
+  non-epitaph error, something wrote an error unexpectedly — chase it.
+
+What got built this session (all CODED, none verified yet):
+  - CHUNK_SLEEP_MS env gate replaces hardcoded 5s sleep (numeric flag = gate + duration;
+    absent/0 = off = production-safe default)
+  - attempts column: incremented IN the claim UPDATE (crash-proof), RETURNING attempts,
+    cap enforced by claim winner AFTER returning (terminal state must be WRITTEN — a
+    WHERE-clause cap strands the job in 'pending' forever, zombie + dispatcher treadmill)
+  - Cap branch: COALESCE(error, generic epitaph) — preserves a real error from an
+    earlier catchable run; epitaph only fills NULL (all-silent-crash case)
+  - Outer catch: branches on attempts (< max → 'pending' = dispatcher IS the retry
+    timer; else 'failed'), OVERWRITES error (fresh error from this run beats stale)
+  - Boundary check done: catchable and silent paths both allow exactly maxAttempts
+    work runs (< in catch, > in cap branch line up)
+  - Dropped the pinned client entirely — V2 has no multi-statement txn, so pool.query
+    everywhere; connection no longer hoarded through CHUNK_SLEEP; catch-block recovery
+    writes no longer ride a possibly-dead connection
+  - Dispatcher cleaned: dead rowCount-after-loop check removed, dead inner try/catch
+    removed; accepted that recovery-write failures surface via dispatcher .catch log
 
 CARRIED / DON'T FORGET:
-- TEST-ONLY sleep (await setTimeout 5s after each chunk commit) is STILL HARDCODED in
-  processBatchInsertJobV2 — RIP IT OUT or gate behind an env flag before any real run.
-  Every production batch currently sleeps 5s/chunk.
-- bulk_job_results DROP TABLE is still a separate later migration AFTER API cutover.
-- k6 to pin chunk size (cost-per-commit/fsync vs work-lost-per-crash) — not done.
+- MIGRATION NOT YET WRITTEN/RUN: attempts INT DEFAULT 0 + error TEXT on bulk_jobs.
+  Code references both columns — will throw until the migration lands. FIRST THING.
+- FORCE_JOB_ERROR test hook not yet added to the worker (throw after claim).
+- Catch's recovery writes still unguarded — wrap in try/catch that logs
+  "recovery write failed, reaper will handle" and swallows (DB-fully-down case).
+- bulk_job_results DROP TABLE still a separate later migration AFTER API cutover.
+- k6 to pin chunk size — not done.
 
 **Open questions / things I'm stuck on:**
-- ~~reaper cron not BUILT~~ BUILT, running on all 3 instances, PROVEN in crash test 07-03.
-- ~~dispatcher cron not BUILT~~ BUILT (discovery-only), running, PROVEN in crash test 07-03.
-- ~~worker resume path not wired~~ WIRED: worker self-queries pending items; fresh and
-  resume are the same code path (D-log 2026-07-03).
-- Known gap (scale, deferred): each instance runs its own dispatcher cron, so at N
-  instances N pollers race per ~2s tick. Safe via the atomic claim but wasteful —
-  defer to leader election / SKIP LOCKED (literally the M5 preview).
-- Known gap: 30s max request origin unconfirmed — suspect onRedisUnavailable
-  DB fallback path under extreme pool contention. connectionTimeoutMillis
-  error message mismatch means timeout isn't caught correctly.
-  Fix: normalize error handling to catch all pg timeout variants.
-- STILL OPEN from the worker: the outer catch has "// do we set status to failed or
-  pending?" — on an unexpected throw (not a per-chunk failure) the job is left in
-  'processing' and relies on the reaper to reclaim it. Decide explicitly next session.
+- ~~outer-catch failed-vs-pending~~ RESOLVED 07-07: attempts cap (see D-log both rows).
+- Known gap (scale, deferred): N dispatcher pollers race per tick → M5 (SKIP LOCKED).
+- Known gap: 30s max request origin unconfirmed (onRedisUnavailable / pg timeout
+  variant mismatch) — carried from M3.
 
 ---
 
@@ -56,7 +53,7 @@ CARRIED / DON'T FORGET:
 | 1 | Single Box | ✅ Done | 2026-04-27 | 2026-04-29 | — |
 | 2 | API Design | ✅ Done | 2026-05-01 | 2026-05-12 | — |
 | 3 | Caching | ✅ Done| 2026-05-12 | 2026-06-11 | — |
-| 4 | Horizontal Scale | 🟡 | 2026-06-11 | — | S3 done (crash test passed 07-03); S4/S5/S6/S7 remain |
+| 4 | Horizontal Scale | 🟡 | 2026-06-11 | — | S3 crash test passed 07-03; hardening (attempts cap) coded 07-07, verification pending; S4/S5/S6/S7 remain |
 | 5 | Async Work | ⬜ | — | — | — |
 | 6 | Data: Replication, Sharding, Migrations | ⬜ | — | — | — |
 | 7 | Auth & Security | ⬜ | — | — | — |
@@ -114,6 +111,8 @@ CARRIED / DON'T FORGET:
 | 2026-07-02 | 4 | Keep BOTH a per-row-transaction worker (`processBatchInsertJob`) and a true-batch CTE worker (`processBatchInsertJobV2`); for `shortn`'s workload the per-row shape is the correct default | URL inserts fail *independently* (one bad URL is not the batch's shared fate), so a bulk/all-or-nothing statement condemns all N rows for one bad row AND collapses per-row error identity (every failed row gets the same error text). Per-row isolation is a *correctness* property already decided ("19 good, 1 fails"); batch buys *throughput* (fewer commits/fsync) which is unmeasurable at 60 URLs. Kept the batch version only as a learning artifact to feel the contrast | per-row pays N round trips per job (invisible at this scale, real at 10k+); maintaining two code paths that must not drift. Batch/bulk is the right tool only when the batch shares a single fate — not here |
 | 2026-07-03 | 4 | Worker takes `jobId` ONLY and self-queries its work (`bulk_job_items WHERE job_id AND status='pending'`) as its first act, over trusting a caller-passed `urls` array | collapses fresh-start and resume into a SINGLE code path — the worker always asks the table "what's pending for this job?", getting all 60 on a fresh run and only the leftovers on a resume, so there is no "resume mode" to special-case and nothing to drift. The row status in the table is the single source of truth for "what's left"; an argument would be a second source that can disagree and cause reprocessing of already-committed rows (duplicate short codes). On the resume path there is no caller holding the urls anyway, so the query happens either way | one extra indexed SELECT on the fresh path where the caller already had the urls in hand — sub-ms against the partial index, dwarfed by the inserts that follow |
 | 2026-07-03 | 4 | Dispatcher DISCOVERS ONLY (plain `SELECT id FROM bulk_jobs WHERE status='pending'`, no UPDATE); the atomic claim lives PER-JOB inside the worker, over a dispatcher that claims all pending rows in one `UPDATE ... RETURNING id` | one UPDATE that claims all pending rows funnels the whole fleet's work onto whichever instance's dispatcher ticks first — the other two instances SELECT/UPDATE, find zero pending, and sit idle. Discovery-only + per-job claim means all 3 instances fire a worker per candidate id, the workers race the claim per job (one wins, two get rowCount=0 and bounce), and jobs spread naturally across the fleet. Dispatcher is allowed to over-select; the claim is the referee | dispatcher over-selects and fires workers that will lose the claim — cheap wasted UPDATEs, no correctness cost. Also fire workers WITHOUT await (with `.catch`) so a slow job doesn't starve the tick |
+| 2026-07-07 | 4 | `attempts` incremented inside the claim UPDATE (crash-proof counting); the attempt cap is enforced by the claim winner AFTER `RETURNING`, not as a filter in the claim's WHERE clause | putting `attempts < cap` in the claim WHERE means a row that has exhausted its attempts can never be claimed by ANY worker again — the condition is never satisfied, so no worker can lock the row to flip it to `failed`, and the job is stuck in a reap/redispatch loop forever. The check must live after the claim: the winner reads the returned `attempts`, and if the cap is exceeded it marks the job `failed` instead of processing. Incrementing in the claim UPDATE itself makes the count crash-proof — the attempt is recorded atomically with taking ownership, so a worker that dies mid-job has still burned its attempt | the claim UPDATE always succeeds even for exhausted jobs, so a worker is spent just to deliver the `failed` verdict — one extra claim/UPDATE cycle per dead job. A row's `attempts` can exceed the cap by one (the counting claim that discovers exhaustion), so the cap reads as "attempts allowed to start", not a hard ceiling on the stored value |
+| 2026-07-07 | 4 | Job-level `error` on `bulk_jobs` is written on EVERY failed attempt — including when status goes back to `pending` for retry — and cleared on a successful terminal status | the process that actually saw the failure is the only one that has the error message, and it may die right after writing it. If the error were only written at the `failed` verdict, the worker delivering that verdict (a later claim, possibly after a reap) has no RAM from the run that broke — the message would be lost. Writing it on every failed attempt means the row carries it across process boundaries: run 3 writes `status='pending', error='connection refused'` and dies; run 4 claims, sees attempts exhausted, stamps `failed` — and the error is already sitting on the row, written by the last process that saw it. The row is the messenger, same as everything else in this design | `status='pending'` with a non-null `error` looks contradictory but is information: "retryable, and here's why the last attempt failed." Same shape already accepted for `bulk_job_items.error` (2026-06-30): the column's meaning is only legible in combination with status — readers must branch on status first; `error` is "most recent failure, if any," never the state itself |
 
 ---
 
@@ -361,3 +360,4 @@ CARRIED / DON'T FORGET:
 | 2026-06-30 | Xh | M4 S3 | Resolved failed-row error col (nullable error TEXT on bulk_job_items, D-log); built + verified bulk_job_items migration + partial index; wrote & ran backfill (expand-migrate-contract, 26→26, old table frozen, drop deferred); designed+defended atomic claim (rowCount signal, why SELECT-then-UPDATE races), heartbeat (5s/15s 3× margin, clearInterval in finally), reaper (both-predicate, slow-is-fine tolerance); earned the atomic-claim concept | coding claim+heartbeat+reaper; dispatcher; resume query; k6 chunk size |
 | 2026-07-02 | Xh | M4 S3 | CODED the worker unit + happy-path green (60→60 completed). Traced the full row lifecycle & every seam by hand before coding (heartbeat cleanup on the 3 exit paths, kill -9 = pulse-stops-itself, reaper caught by a sibling instance, resume via committed item status). Fixed 3 bugs in review: heartbeat 15s→5s (restore 3× margin), bare UPDATE → atomic claim w/ rowCount guard, per-job commit → per-row/per-chunk transactions on a checked-out client (release in finally). Killed the dead outer chunk loop; kept per-row + a true-batch V2 for contrast. Replaced in-memory counters w/ post-loop aggregate for terminal status (resumability). Generated 60-URL test body | THE CRASH TEST (kill -9 → reaper → dispatcher → resume) — the actual point of Stage 3; reaper+dispatcher crons not yet coded; k6 chunk size |
 | 2026-07-03 | Xh | M4 S3 ✅ | CODED reaper + dispatcher crons and PASSED THE CRASH TEST — the actual point of Stage 3. Refactored worker to jobId-only + self-query of pending items (fresh & resume = one path, D-log); added `updated_at=NOW()` to the claim so the claim is its own first heartbeat; reaper = atomic flip (`< NOW() - 15s`, node-cron 6-field ~60s, rowCount log as proof); dispatcher = discovery-only SELECT + un-awaited per-job worker fire w/ .catch (~2s). Fixed the fatal design bug where the dispatcher claimed ALL pending rows in one UPDATE and funneled the fleet onto one instance → F-10. Ran on real containers: docker kill instances mid-job → SIBLING reaper flipped processing→pending → sibling dispatcher re-claimed → resume picked up only pending items. Verified in PG: 60/60 completed, 0 pending, 0 duplicate URLs, bulk_jobs.status='completed'. Articulated the full lifecycle in own words | ripping out the TEST-ONLY per-chunk sleep; deciding outer-catch failed-vs-pending policy; Stage 4 (break the fix); k6 chunk size |
+| 2026-07-07 | Xh | M4 S3 | Closed the outer-catch question via attempts cap: counted IN the claim (crash-proof — catch blocks can't see kill -9), enforced by claim WINNER post-RETURNING (WHERE-clause cap = zombie job nobody can flip; a terminal state must be WRITTEN). error = "most recent failure": catch overwrites fresh, cap branch COALESCEs, success clears. Gated test sleep behind CHUNK_SLEEP_MS (numeric = gate+duration, absent = prod-safe). Dropped pinned client — no multi-stmt txn in V2, pool.query everywhere, no more connection hoarding through sleeps. Untangled threads-vs-connections mental model (pool = phone lines, one event loop). Cleaned dispatcher dead code. 2 D-log rows | RUNNING Run A/B cap verification; the attempts+error migration; FORCE_JOB_ERROR hook; guarding recovery writes; Stage 4; k6 chunk size |
