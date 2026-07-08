@@ -9,9 +9,9 @@ import { AppError } from "../errors/app.error.js";
 import { CircuitBreakerError } from "../errors/circuit.error.js";
 import redis, { redisCircuitBreaker } from "../db/redis.js";
 import { logger } from "../utils.ts/logger.js";
-import { getFInalCompletionStatus } from "../utils.ts/url.js";
+import { getFinalCompletionStatus } from "../utils.ts/url.js";
 
-const CHUNK_SLEEP_TIME_MS = process.env.CHUNK_SLEEP_TIME_MS
+const CHUNK_SLEEP_TIME_MS = process.env.CHUNK_SLEEP_MS
   ? parseInt(process.env.CHUNK_SLEEP_MS!, 10)
   : undefined;
 
@@ -470,6 +470,31 @@ async function bumpUpdatedAt(jobId: string): Promise<void> {
   ]);
 }
 
+async function jobFinalStatus(
+  jobId: string,
+): Promise<ReturnType<typeof getFinalCompletionStatus>> {
+  const finalStatusResult = await pool.query(
+    `SELECT 
+        COUNT(*) FILTER (WHERE status = 'completed') AS success_count,
+        COUNT(*) FILTER (WHERE status = 'failed') AS failed_count,
+        COUNT(*) FILTER (WHERE status = 'pending') AS pending_count
+       FROM bulk_job_items 
+       WHERE job_id = $1`,
+    [jobId],
+  );
+
+  const successCount = parseInt(finalStatusResult.rows[0].success_count, 10);
+  const failedCount = parseInt(finalStatusResult.rows[0].failed_count, 10);
+  const pendingCount = parseInt(finalStatusResult.rows[0].pending_count, 10);
+
+  const finalStatus = getFinalCompletionStatus(
+    successCount,
+    failedCount,
+    pendingCount,
+  );
+  return finalStatus;
+}
+
 export async function processBatchInsertJobV2(
   jobId: string,
   webhookUrl?: string,
@@ -487,14 +512,25 @@ export async function processBatchInsertJobV2(
     if (result.rowCount === 0) {
       return; // Job is already being processed or completed
     }
-
     attempts = result.rows[0]?.attempts || 0;
+    // Force an error for testing purposes if the environment variable is set
+    if (process.env.FORCE_JOB_ERROR === "true") {
+      throw new Error("Forced job error for testing purposes");
+    }
 
     if (attempts > maxAttempts) {
-      await pool.query(
-        `UPDATE bulk_jobs SET status = 'failed', error=coalesce(error, 'exceeded max attempts — worker crashed without recording an error') WHERE id = $1`,
-        [jobId],
-      );
+      const finalStatus = await jobFinalStatus(jobId);
+      if (finalStatus === "completed" || finalStatus === "partial") {
+        await pool.query(`UPDATE bulk_jobs SET status = $1 WHERE id = $2`, [
+          finalStatus,
+          jobId,
+        ]);
+      } else {
+        await pool.query(
+          `UPDATE bulk_jobs SET status = 'failed', error=coalesce(error, 'exceeded max attempts — worker crashed without recording an error') WHERE id = $1`,
+          [jobId],
+        );
+      }
       return;
     }
 
@@ -513,6 +549,12 @@ export async function processBatchInsertJobV2(
 
     for (let i = 0; i < urls.length; i += batch_size) {
       const batch = urls.slice(i, i + batch_size);
+      if (process.env.PRE_CHUNK_SLEEP_MS) {
+        await new Promise((resolve) =>
+          setTimeout(resolve, parseInt(process.env.PRE_CHUNK_SLEEP_MS!, 10)),
+        );
+      } // Wait for 10 seconds before processing the batch
+
       try {
         await pool.query(
           `WITH inserted AS (
@@ -545,29 +587,18 @@ export async function processBatchInsertJobV2(
         );
       }
     }
-    const finalStatusResult = await pool.query(
-      `SELECT 
-        COUNT(*) FILTER (WHERE status = 'completed') AS success_count,
-        COUNT(*) FILTER (WHERE status = 'failed') AS failed_count
-       FROM bulk_job_items 
-       WHERE job_id = $1`,
-      [jobId],
-    );
 
-    const successCount = parseInt(finalStatusResult.rows[0].success_count, 10);
-    const failedCount = parseInt(finalStatusResult.rows[0].failed_count, 10);
-
-    const finalStatus = getFInalCompletionStatus(successCount, failedCount);
+    const finalStatus = await jobFinalStatus(jobId);
 
     await pool.query(
-      `UPDATE bulk_jobs SET status = $1, error = CASE WHEN $1 IN ('completed','partial') THEN NULL ELSE error END WHERE id = $2`,
+      `UPDATE bulk_jobs SET status = $1::job_status, error = CASE WHEN $1 IN ('completed','partial') THEN NULL ELSE error END WHERE id = $2`,
       [finalStatus, jobId],
     );
   } catch (error) {
     const errorMessage =
       error instanceof Error ? error.message : "Unknown error";
 
-    if (attempts <= maxAttempts) {
+    if (attempts < maxAttempts) {
       await pool.query(
         `UPDATE bulk_jobs SET status = 'pending', error = $1 WHERE id = $2`,
         [errorMessage, jobId],
