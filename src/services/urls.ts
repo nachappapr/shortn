@@ -577,6 +577,9 @@ export async function processBatchInsertJobV2(
           );
         }
       } catch (error) {
+        logger(
+          `[job ${jobId}] chunk failed (items ${i}-${i + batch.length}): ${error instanceof Error ? error.message : error}`,
+        );
         await pool.query(
           `UPDATE bulk_job_items SET status = 'failed', error = $1 WHERE job_id = $2 AND url = ANY($3::text[]) AND status = 'pending'`,
           [
@@ -597,6 +600,8 @@ export async function processBatchInsertJobV2(
   } catch (error) {
     const errorMessage =
       error instanceof Error ? error.message : "Unknown error";
+
+    logger(`[job ${jobId}] attempt ${attempts} failed: ${errorMessage}`);
 
     if (attempts < maxAttempts) {
       await pool.query(

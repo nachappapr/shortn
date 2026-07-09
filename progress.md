@@ -1,38 +1,37 @@
 ## Current Position
-Current Position: Module 4, Stage 3 — hardening VERIFIED (Run A + Run B, all 4 verdict paths). Stage 3 fully closed pending recovery-write guard.
+Current Position: Module 4, Stage 3 — CLOSED. Recovery-write guard coded;
+  process.exit(-1) removed from pool error handler. Ready for Stage 4.
 Module: Module 4
-Stage: 3 (done) → Stage 4 (break the fix)
-Last session: 2026-07-08
-Next action: guard the catch's recovery writes (try/catch, log "recovery write
-  failed, reaper will handle", swallow — DB-fully-down case), then START STAGE 4.
+Stage: 3 (✅ closed 07-09) → Stage 4 (break the fix)
+Last session: 2026-07-09
+Next action: START STAGE 4 (break the fix).
 
-Verified this session (2026-07-08):
-  - Migration landed: attempts INT NOT NULL DEFAULT 0 + error TEXT on bulk_jobs
-  - Run A (FORCE_JOB_ERROR): failed, attempts=3, error=forced message. Catch
-    self-terminates at exactly maxAttempts — cap branch never reached. ~3.6s total.
-  - Run B s1 (silent kills, all chunks banked before kill 3): attempts=4 →
-    verdict COMPLETED, not failed. Pre-fix this was a lie to the client.
-  - Run B s2 (silent kills, partial progress): attempts=4 → PARTIAL.
-  - Run B s3 (pre-work sleep, zero progress, 3 kills): failed, attempts=4,
-    error = COALESCE epitaph, 60 items pending. Epitaph writer proven.
-  - Fixed 3 bugs found by hand-tracing before running: (1) local `attempts`
-    copied AFTER the forced throw — catch read stale 0, infinite retry
-    (same disease as 07-02 RAM counters); (2) catch boundary <= → < ;
-    (3) cap branch stamped 'failed' unconditionally → now derives verdict
-    from items aggregate (F-11).
-  - getFinalCompletionStatus now takes (success, failed, pending):
-    notDelivered = failed + pending; 0 notDelivered = completed,
-    0 success = failed, else partial. Explicit return type (old version
-    could return undefined on mixed happy-path results).
-  - Test hooks: FORCE_JOB_ERROR (throw after claim+copy), pre-work sleep
-    env gate (same absent=off contract as CHUNK_SLEEP_MS).
+Verified this session (2026-07-09):
+  - Recovery writes in outer catch wrapped in try/catch: log
+    "[job id] recovery write failed, reaper will handle", swallow.
+  - Logger format standardized: `[job ${jobId}]` prefix everywhere,
+    attempt number in outer catch — grep one jobId = whole story
+    (same shape as X-Request-ID from S2).
+  - Root-caused "app dies when Postgres dies": pool.on('error') had
+    process.exit(-1) (copied from pg docs). One idle client erroring
+    (FATAL 57P01 on PG shutdown) executed the whole process — killing
+    the reaper+dispatcher crons the self-heal chain depends on.
+    Removed the exit; pool discards dead clients and re-mints on its own.
+  - Kill test: Postgres killed mid-job → app containers survived →
+    "attempt 1 failed: getaddrinfo ENOTFOUND postgres" logged →
+    PG restarted → attempt 2 completed the job.
+  - Learned: "DB down" wears 3 costumes — 57P01 (dying),
+    ECONNREFUSED (dead, port closed), ENOTFOUND (dead, DNS gone).
 
 CARRIED / DON'T FORGET:
-- Catch's recovery writes still unguarded — FIRST THING next session.
-- Death-path partial/completed arm does NOT clear `error` (happy path does).
-  Kept by default — "partial + last crash reason" matches the 07-07 error
-  shape — but this was never explicitly decided. Confirm or change, then D-log it.
-- bulk_job_results DROP TABLE still a separate later migration AFTER API cutover.
+- Guard's catch branch has NEVER executed in a real run (recovery write
+  succeeded in the kill test — DB was back too fast). If Stage 4 shows
+  weirdness around dead-DB recovery, this untested branch is suspect #1.
+- 503-vs-500 translation for DB-down errors deferred (one branch in the
+  error middleware: 57P01/ECONNREFUSED/ENOTFOUND → 503 + Retry-After).
+- Death-path partial/completed arm does NOT clear `error` — never
+  explicitly decided. Confirm or change, then D-log it.
+- bulk_job_results DROP TABLE — separate later migration AFTER API cutover.
 - k6 to pin chunk size — not done.
 
 **Open questions / things I'm stuck on:**
@@ -110,6 +109,8 @@ CARRIED / DON'T FORGET:
 | 2026-07-07 | 4 | Job-level `error` on `bulk_jobs` is written on EVERY failed attempt — including when status goes back to `pending` for retry — and cleared on a successful terminal status | the process that actually saw the failure is the only one that has the error message, and it may die right after writing it. If the error were only written at the `failed` verdict, the worker delivering that verdict (a later claim, possibly after a reap) has no RAM from the run that broke — the message would be lost. Writing it on every failed attempt means the row carries it across process boundaries: run 3 writes `status='pending', error='connection refused'` and dies; run 4 claims, sees attempts exhausted, stamps `failed` — and the error is already sitting on the row, written by the last process that saw it. The row is the messenger, same as everything else in this design | `status='pending'` with a non-null `error` looks contradictory but is information: "retryable, and here's why the last attempt failed." Same shape already accepted for `bulk_job_items.error` (2026-06-30): the column's meaning is only legible in combination with status — readers must branch on status first; `error` is "most recent failure, if any," never the state itself |
 | 2026-07-08 | 4 | Cap branch derives the terminal verdict from the `bulk_job_items` aggregate (same `jobFinalStatus` as the happy path), instead of unconditionally stamping `failed` | resumability means the process delivering the exhaustion verdict has no knowledge of what the dead processes accomplished — killed runs bank chunks durably, so a job can exhaust attempts with all/some/none of its work done. "Exhausted = failed" was an assumption baked into a branch, written imagining a job that never worked; the table is the only witness. Found because the first Run B attempt kept COMPLETING before the third kill — the test difficulty was the data | one extra aggregate query on the death path; `attempts=4, status='completed'` looks odd but is the truth ("succeeded, took every life it had"); epitaph now only fires on the true zero-progress case |
 | 2026-07-08 | 4 | Terminal verdict counts abandoned `pending` items as undelivered (folded with `failed`): notDelivered=0 → completed, success=0 → failed, else partial | on a terminal job, a pending item will never run — to the client, "failed" and "abandoned" are the same thing: a URL they won't get. Counting only completed vs failed made 20/0/40 read as `completed` (a lie) and 0/0/60 as unreachable-failed. On the happy path pending is always 0 at verdict time, so behavior there is unchanged — one function, both endings, no death-mode flag | pending items on a terminal job carry no per-item error (nothing ever touched them) — client sees `partial` but abandoned rows are only distinguishable from failed rows by their NULL error + pending status |
+| 2026-07-09 | 4 | Recovery writes in the outer catch are guarded (inner try/catch, log "reaper will handle", swallow — never re-throw) | the catch block is the last place the original job error exists; a failed recovery write re-thrown REPLACES it on the way up, so logs show "connection refused" and the real failure reason exists nowhere. Guard preserves the witness testimony; survival was never the issue — reaper handles the parked row | row sits at status='processing' with a dead heartbeat until the reaper flips it (~60s after DB returns); the guard's log line is the only evidence recovery was attempted; the guard branch itself has never executed in a real run |
+| 2026-07-09 | 4 | Removed `process.exit(-1)` from `pool.on('error')` (kept the log) | the docs-example handler executed the entire process because ONE idle pool client errored — a 2s blip, a PG restart, a failover all trigger it. It killed the reaper and dispatcher crons, invalidating the whole self-heal chain proven on 07-03: no surviving process = no recovery. The pool already absorbs dead clients and mints fresh connections; the exit overruled the mechanism designed for exactly this | a process that can't reach the DB stays alive and keeps taking traffic, returning errors (500 today; 503-translation deferred). "Don't take traffic" now has no mechanism at all — acceptable while all instances share one DB (nowhere better to route), revisit if per-instance DB paths ever diverge |
 
 ---
 
@@ -367,3 +368,4 @@ CARRIED / DON'T FORGET:
 | 2026-07-03 | Xh | M4 S3 ✅ | CODED reaper + dispatcher crons and PASSED THE CRASH TEST — the actual point of Stage 3. Refactored worker to jobId-only + self-query of pending items (fresh & resume = one path, D-log); added `updated_at=NOW()` to the claim so the claim is its own first heartbeat; reaper = atomic flip (`< NOW() - 15s`, node-cron 6-field ~60s, rowCount log as proof); dispatcher = discovery-only SELECT + un-awaited per-job worker fire w/ .catch (~2s). Fixed the fatal design bug where the dispatcher claimed ALL pending rows in one UPDATE and funneled the fleet onto one instance → F-10. Ran on real containers: docker kill instances mid-job → SIBLING reaper flipped processing→pending → sibling dispatcher re-claimed → resume picked up only pending items. Verified in PG: 60/60 completed, 0 pending, 0 duplicate URLs, bulk_jobs.status='completed'. Articulated the full lifecycle in own words | ripping out the TEST-ONLY per-chunk sleep; deciding outer-catch failed-vs-pending policy; Stage 4 (break the fix); k6 chunk size |
 | 2026-07-07 | Xh | M4 S3 | Closed the outer-catch question via attempts cap: counted IN the claim (crash-proof — catch blocks can't see kill -9), enforced by claim WINNER post-RETURNING (WHERE-clause cap = zombie job nobody can flip; a terminal state must be WRITTEN). error = "most recent failure": catch overwrites fresh, cap branch COALESCEs, success clears. Gated test sleep behind CHUNK_SLEEP_MS (numeric = gate+duration, absent = prod-safe). Dropped pinned client — no multi-stmt txn in V2, pool.query everywhere, no more connection hoarding through sleeps. Untangled threads-vs-connections mental model (pool = phone lines, one event loop). Cleaned dispatcher dead code. 2 D-log rows | RUNNING Run A/B cap verification; the attempts+error migration; FORCE_JOB_ERROR hook; guarding recovery writes; Stage 4; k6 chunk size |
 | 2026-07-08 | Xh | M4 S3 ✅ | VERIFIED the cap: migration landed; Run A green (3 attempts, catch self-terminates); Run B ×3 scenarios green (completed / partial / failed+epitaph at attempts=4). Fixed stale-local-attempts ordering bug (copy from RETURNING before anything can throw), catch boundary <= → <, and F-11 (cap verdict now derived from items aggregate, pending counted as undelivered). Earned: verdict must come from durable state because the verdict-writer and work-doer can be different processes | recovery-write guard; death-path error-clearing decision; Stage 4; k6 chunk size |
+| 2026-07-09 | Xh | M4 S3 ✅ CLOSED | Recovery-write guard + logger format ([job id] prefix, attempt in outer catch); root-caused app-dies-with-PG to process.exit(-1) in pool.on('error') — removed, self-heal chain now survives DB death; kill test: containers survived, attempt 1 failed (ENOTFOUND), attempt 2 completed | guard catch-branch never exercised; 503 translation; death-path error-clearing; Stage 4; k6 chunk size |
