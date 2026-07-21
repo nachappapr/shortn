@@ -12,15 +12,9 @@ export function scheduleWorkerCronJob() {
 
       for (const row of result.rows) {
         const jobId = row.id;
-        try {
-          processBatchInsertJobV2(jobId).catch((err) => {
-            console.error(`Error processing batch insert job ${jobId}:`, err);
-          });
-        } catch (err) {
-          logger(
-            `[job ${jobId}] recovery write failed, reaper will handle: ${err instanceof Error ? err.message : err}`,
-          );
-        }
+        processBatchInsertJobV2(jobId).catch((err) => {
+          console.error(`Error processing batch insert job ${jobId}:`, err);
+        });
       }
       if (result.rowCount && result.rowCount === 0) return;
     } catch (error) {

@@ -603,16 +603,20 @@ export async function processBatchInsertJobV2(
 
     logger(`[job ${jobId}] attempt ${attempts} failed: ${errorMessage}`);
 
-    if (attempts < maxAttempts) {
-      await pool.query(
-        `UPDATE bulk_jobs SET status = 'pending', error = $1 WHERE id = $2`,
-        [errorMessage, jobId],
-      );
-    } else {
-      await pool.query(
-        `UPDATE bulk_jobs SET status = 'failed', error = $1 WHERE id = $2`,
-        [errorMessage, jobId],
-      );
+    try {
+      if (attempts < maxAttempts) {
+        await pool.query(
+          `UPDATE bulk_jobs SET status = 'pending', error = $1 WHERE id = $2`,
+          [errorMessage, jobId],
+        );
+      } else {
+        await pool.query(
+          `UPDATE bulk_jobs SET status = 'failed', error = $1 WHERE id = $2`,
+          [errorMessage, jobId],
+        );
+      }
+    } catch (error) {
+      logger(`[job ${jobId}] recovery write failed, reaper will handle`);
     }
   } finally {
     clearInterval(heartBeatInterval);
