@@ -1,101 +1,133 @@
 ## Current Position
-Current Position: Module 4, Stage 4 — IN PROGRESS. Suspect #1 cleared:
-  the 07-09 "guard" was dead code; rebuilt inside the worker's catch and
-  PROVEN with a real dead-DB kill (guard branch executed for the first time).
+Current Position: Module 4, Stage 4 — IN PROGRESS. Returned after a 28-day
+  gap (07-20 → 08-18). Session was a COLD START: re-read the whole worker
+  line by line against the notes. Notes held up — guard is in the worker's
+  catch, dispatcher's dead try/catch is gone, query_timeout:5000 is on the
+  pool. Re-read turned up 3 new findings (2 D-logged, 1 carried).
 Module: Module 4
 Stage: 4 (break the fix) 🟡
-Last session: 2026-07-20
-Next action: DECIDE whether Stage 4 is done (check carried list for
-  un-attacked items — 503 translation? death-path error-clearing?) or
-  move to Stage 5 (AWS-native: ALB + ASG/ECS).
+Last session: 2026-08-18
+Next action: THE K6 CHUNK-SIZE RUN. Measurement is designed (see below);
+  blocker is that there's no way yet to create N concurrent jobs on demand.
+  Solve that first, then sweep concurrency 6 → 12 → 24.
 
-Verified this session (2026-07-20) — part 2 (same day):
-  - Claim-then-die gap CLEARED BY DESIGN REVIEW (no test needed — every
-    link individually proven): worker dies right after the claim commits,
-    before heartbeat interval exists → claim's own `updated_at=NOW()`
-    (07-03) is the first and last pulse → stale at T=15s → sibling reaper
-    flips at worst-case ~60s → dispatcher re-claims ~2s later → attempt
-    already burned (counted IN the claim, 07-07). No stuck-forever window.
-    Counterfactual noted: danger runs the other way — a reaper threshold
-    SHORTER than the claim→first-interval-tick gap would reap a healthy
-    slow-starting worker; 15s threshold vs 5s cadence (3× margin) keeps
-    that impossible.
-  - ZOMBIE WORKER analyzed (alive but not progressing — chunk query hangs
-    forever, heartbeat keeps pulsing): heartbeat attests LIVENESS, not
-    PROGRESS. Every safety mechanism keys off liveness or death; a zombie
-    is neither — reaper sees fresh pulse, dispatcher sees non-pending,
-    cap never fires (no new claim), client polls forever.
-  - Fork: Option A (progress-watching reaper on item-status movement) vs
-    Option B (bound the operation — timeout turns the hang into a thrown
-    error the existing machinery handles). CHOSE B. Both guess at
-    slow-vs-dead; A's wrong guess = two owners (correctness violation),
-    B's wrong guess = a healthy chunk redone (throughput waste, safe
-    because resume machinery proven). Waste heals; corruption doesn't.
-  - Then discovered B ALREADY EXISTS: `query_timeout: 5000` on the pool —
-    the M1/F-02 fix silently covers the zombie path. Infinite hang was
-    already impossible; chain = timeout throws → guard-ordered catch →
-    recovery write (DB healthy here) → dispatcher re-claims in ~2s.
-  - Loose thread: 5000ms was calibrated for M1 single-row lookups, NOT
-    for a 20-row chunk CTE under load. A legit >5s chunk burns an attempt;
-    3 in a row kills a viable job via the cap. k6 chunk-size run is now
-    LOAD-BEARING — it validates a correctness-adjacent number (same
-    calibration lesson as commandTimeout 100→500ms).
+### Measurement design for the k6 chunk run (decided 08-18, not yet run)
+  - The number to measure is the CHUNK CTE duration under concurrent load,
+    to validate `query_timeout: 5000`.
+  - MEASURE IN NODE, NOT POSTGRES. `pg_stat_statements` gives mean/min/max
+    but NO percentiles, and it only sees execution time inside PG. The
+    timeout is enforced by the pg client and its clock starts at
+    `pool.query()` — which INCLUDES pool-wait. A chunk can wait 3s for a
+    connection, execute in 500ms, and still trip a 5000ms timeout while
+    PG swears everything is fine. Measure at the layer that enforces the
+    limit.
+  - Implementation: `t0 = Date.now()` around the chunk CTE, log the delta
+    on the SUCCESS path (today it's only logged on failure). One JSON line
+    per chunk carrying: duration, jobId, chunk index, instanceId (already
+    on every line via the M4-S2 logger), timestamp. JSON so p99 is a
+    5-line script, not a regex at 11pm.
+  - k6 at 1000 VUs is the WRONG TOOL here. The endpoint returns 202 in
+    ~5ms — the response says nothing about whether work happened. 1000 VUs
+    would produce thousands of queued pending jobs, a dispatcher with no
+    LIMIT firing a worker per job per tick per instance, and chunk timings
+    that measure pool-queueing, not write cost. The knob is CONCURRENT
+    WORKERS, not RPS. Create a controlled N jobs and let the dispatcher
+    pick them up.
+  - Reading the result: p99 is a CUTOFF, not an average — it's blind to
+    everything above it. Also need max, and ideally p99.9. And the
+    per-chunk failure rate compounds per JOB: 1% per chunk ≈ 3% for a
+    60-URL job (3 chunks), ≈22% for a 500-URL job (25 chunks). The client
+    experiences jobs, not chunks.
+  - The knob to reach for if the number is uncomfortable is CHUNK SIZE
+    (20 → smaller), NOT raising the timeout. Raising it walks back the
+    F-02 fail-fast property; shrinking the chunk pulls the measured number
+    down AND shrinks the blast radius of one bad roll (20 URLs → 5).
+    Cost: more round trips, invisible at this scale.
+  - The punishment is a CLIFF, not a slope: 4999ms completes, 5001ms
+    cancels and stamps 20 healthy URLs `failed`. 30s is punished
+    identically to 5001ms. That asymmetry is why a thin margin is unsafe.
 
-Verified this session (2026-07-20) — part 1:
-  - The guard described on 07-09 DIDN'T EXIST: it lived in the dispatcher's
-    synchronous try/catch around an UN-AWAITED promise — a sync try closes
-    before an async rejection arrives, so that catch (with the "reaper will
-    handle" log) could never fire. The rejection actually landed in the
-    fired promise's .catch, carrying the RECOVERY WRITE's error, which
-    REPLACED the original job error — the exact witness-destruction the
-    guard was supposed to prevent. 07-09's test passed while the code was
-    wrong because PG came back before the catch ran.
-  - Rebuilt guard IN the worker's outer catch, ordering is the guard:
-    (1) log original error FIRST (only op that can't die with the DB),
-    (2) try recovery write, (3) catch → log "recovery write failed,
-    reaper will handle", swallow, never rethrow. Deleted the dispatcher's
-    dead try/catch; kept .catch on the fired promise as last-resort net.
-  - PROVED the branch with a real kill: CHUNK_SLEEP window → kill PG →
-    chunk fails (ENOTFOUND) → catch runs against a STILL-DEAD DB →
-    both log lines in order (attempt 1 failed → recovery write failed) →
-    PG restarted only AFTER seeing the guard line → reaper flipped the
-    parked row → dispatcher re-claimed → completed, attempts=2, 60/60
-    items, 0 duplicates, error=NULL.
-  - Learned: recovery write in the catch is the FAST lane (dispatcher,
-    ~2s); the reaper is the CORRECTNESS FLOOR (slow lane, ~60s). Proved
-    the slow lane works when the fast lane is dead. Worst-case resume
-    after PG returns = SUM of sequential timers: 60s reaper tick + 2s
-    dispatcher tick ≈ 61s (same lesson shape as F-02: recovery time is
-    the sum of every timer in the chain).
-  - error=NULL on the final row is POLICY, not luck: success path clears
-    error via CASE WHEN completed/partial (07-07 decision) — a client
-    never sees a stale error on a healthy verdict, on any path.
-  - Duplicate-proof on retry: chunk txn atomicity (mid-flight death
-    commits nothing) + resume query selects only status='pending' items.
-    Third net for free: ON CONFLICT (original_url) absorbs re-inserts —
-    note it changes semantics (same URL twice in a batch = one row).
+Verified this session (2026-08-18) — cold-start code read:
+  - COLD-START RITUAL after a long gap: read the CODE against the NOTES
+    before trusting either. This is the F-12 lesson generalized — the
+    notes said the guard shipped and the code disagreed for 11 days.
+    28 days is a wider version of the same gap. Audit held: guard is in
+    the worker's outer catch with log-before-write ordering, dispatcher's
+    dead try/catch is deleted, `query_timeout: 5000` is on the pool.
+  - ORPHAN JOB found (new): `createBatchInsertJobV2` does two UNWRAPPED
+    writes — insert `bulk_jobs`, then insert `bulk_job_items`. If the
+    second throws (or the process dies between them), a `pending` job row
+    exists with ZERO item rows. Not the reaper's problem — the row is
+    already `pending`, so the DISPATCHER picks it up ~2s later. Worker
+    claims it, self-queries, gets zero rows, loop never runs, aggregate
+    reads 0/0/0, and `notDelivered=0` is checked first → verdict
+    **`completed`**. A job with no items reports success. Blast radius is
+    small (the controller's catch 500s, so no client holds the jobId and
+    nobody polls it) but it's a wasted claim cycle and a lying row.
+    → FIX = transaction around both writes. NOT a guard in the verdict
+    function: with the transaction in place a zero-item job is
+    unreachable, so a guard would be an unprovable branch next to a
+    failure path it claims to cover — the exact F-12 disease.
+  - INNER CATCH mislabels transient failures (new, carried): when a chunk
+    throws, the catch stamps those 20 items `status='failed'` — and
+    NOTHING ever moves an item from `failed` back to `pending`. The
+    resume query only selects `pending`. So `failed` currently means both
+    "this URL is bad" (correct, permanent) and "the DB blipped for 2
+    seconds" (a false accusation, also permanent). Today it self-corrects
+    ONLY because the recovery write hits the same dead DB and throws,
+    escaping to the outer catch which retries the whole job. If PG comes
+    back a moment earlier, the write lands and 20 healthy URLs are dead
+    for good. **Correctness by timing — same smell as F-12, where the
+    07-09 test passed because PG returned at the right moment.**
+  - ON CONFLICT (original_url) is a PRODUCT decision hiding in a DB
+    clause (new): same URL always maps to the same code, fleet-wide,
+    forever. Arrived as a side effect of duplicate-protection on retry;
+    nobody decided it. Blocks per-user analytics on a shared destination,
+    custom codes, per-user expiry. Cheap to change now, expensive once
+    there's data. Accepted deliberately; logged.
+  - Re-derived (not new, but re-earned): claim = take + start-the-clock +
+    count-the-try in one statement; losers BLOCK, then PG re-checks their
+    WHERE against the winner's committed row (EvalPlanQual) → rowCount=0,
+    and losers burn no attempt. The controller's un-awaited worker fire
+    races the 3 dispatchers for a fresh job — all safe, same referee.
+  - Re-derived: `attempts` copy must sit above anything that can throw.
+    A stale `0` in the catch makes `attempts < maxAttempts` always true →
+    job goes back to `pending` forever, cap unreachable. Also noted the
+    `?.` / `|| 0` on that line is dead weight (rowCount===0 already
+    returned above) and actively harmful if it ever fired — silently
+    substituting 0 is the exact stale-value bug.
+  - Re-derived: fast lane vs slow lane = "the fast lane handles the
+    errors your code SURVIVES; the slow lane handles the ones it
+    doesn't." Reaper is the floor, not the normal path.
 
 CARRIED / DON'T FORGET:
-- k6 to pin chunk size — PROMOTED: no longer just perf tuning, it
-  validates `query_timeout: 5000` against real chunk-CTE p99 under load
-  (a wrong number burns attempts on healthy work; cap = 3 slow chunks
-  kills a viable job).
+- k6 to pin chunk size — STILL THE MAIN EVENT. Measurement designed
+  (see block above); BLOCKER: no way to create N concurrent jobs on
+  demand. Solve that first.
+- NEW: inner catch stamps items `failed` on a TRANSIENT DB error and
+  nothing ever un-fails them. Currently self-corrects only by timing
+  (second write also fails). Un-attacked. Candidate Stage-4 break.
+- NEW: wrap job creation in a transaction (decided 08-18, not yet built).
 - Optional receipt: live-test that query_timeout actually fires on the
   chunk CTE path (design review says yes; every link proven separately).
 - Fencing tokens side-read (Kleppmann, queued since 06-29) — Option A's
-  two-owner window from today is the concrete anchor for it.
+  two-owner window is the concrete anchor for it.
 - Dispatcher's discovery SELECT fails during a DB outage — harmless
   (skips a tick), confirmed instances keep breathing; no action needed.
+- Dispatcher's discovery SELECT has NO LIMIT — fires a worker per pending
+  job per tick per instance. Fine at current volume, ugly under a backlog.
+  Related to the M5 SKIP LOCKED gap.
 - 503-vs-500 translation for DB-down errors deferred (one branch in the
   error middleware: 57P01/ECONNREFUSED/ENOTFOUND → 503 + Retry-After).
-- Death-path partial/completed arm does NOT clear `error` — never
-  explicitly decided. Confirm or change, then D-log it.
+- ~~Death-path partial/completed arm does NOT clear `error`~~ — DECIDED
+  2026-08-18, keep it. D-logged.
 - bulk_job_results DROP TABLE — separate later migration AFTER API cutover.
-- k6 to pin chunk size — not done.
 
 **Open questions / things I'm stuck on:**
 - Known gap (scale, deferred): N dispatcher pollers race per tick → M5 (SKIP LOCKED).
 - Known gap: 30s max request origin unconfirmed — carried from M3.
+- Is Stage 4 done once k6 lands? Remaining un-attacked candidates: the
+  transient-failed-items bug (above), 503 translation.
 
 ---
 
@@ -106,7 +138,7 @@ CARRIED / DON'T FORGET:
 | 1 | Single Box | ✅ Done | 2026-04-27 | 2026-04-29 | — |
 | 2 | API Design | ✅ Done | 2026-05-01 | 2026-05-12 | — |
 | 3 | Caching | ✅ Done| 2026-05-12 | 2026-06-11 | — |
-| 4 | Horizontal Scale | 🟡 | 2026-06-11 | — | S3 ✅ closed 07-09; S4 🟡 in progress (guard branch proven 07-20, F-12); S5/S6/S7 remain |
+| 4 | Horizontal Scale | 🟡 | 2026-06-11 | — | S3 ✅ closed 07-09; S4 🟡 in progress (guard branch proven 07-20, F-12; cold-start re-audit 08-18 clean, 3 new findings); S5/S6/S7 remain |
 | 5 | Async Work | ⬜ | — | — | — |
 | 6 | Data: Replication, Sharding, Migrations | ⬜ | — | — | — |
 | 7 | Auth & Security | ⬜ | — | — | — |
@@ -172,6 +204,9 @@ CARRIED / DON'T FORGET:
 | 2026-07-20 | 4 | Guard moved INTO the worker's outer catch, with log-before-write ordering (log original error → try recovery write → catch/swallow), replacing the dispatcher-level try/catch | honest why: the 07-09 version was written in the dispatcher around an UN-AWAITED promise call — a synchronous try/catch closes before an async rejection arrives, so it was dead code, and the test passed anyway because PG came back before the catch ran. The guard must live in the worker's catch because that's the only scope where the original error and the write error coexist; the log must come FIRST because it's the only operation in the block that can't be killed by a dead DB — write-then-log means a throw destroys the witness | dispatcher loses its (illusory) visibility into recovery failures — the fired promise's .catch is now a generic last-resort net only; the guard's swallowed error means a failed recovery write is invisible except as one log line, and the row's fate rests entirely on the reaper (the slow lane, ~60s + ~2s dispatcher = ~61s worst-case resume after DB returns) |
 | 2026-07-20 | 4 | Zombie workers (alive-but-not-progressing) handled by BOUNDING THE OPERATION (query timeout → hang becomes a thrown error the existing catch/recovery/reaper machinery handles), NOT by a progress-watching reaper on item-status movement | heartbeat attests liveness, not progress — a hung chunk query pulses forever while the item count freezes, and every mechanism (reaper, dispatcher, cap) keys off liveness or death, so a zombie evades all of them. Both fixes must guess at slow-vs-dead with a threshold; the difference is the cost of a WRONG guess: a progress-reaper's false positive reaps a worker whose query is still in flight → two owners (the exact corruption the atomic claim exists to prevent, reintroduced by the rescue mechanism); a timeout's false positive makes the worker cancel ITSELF → ownership transfers cleanly, a healthy chunk gets redone. Waste heals itself, corruption doesn't — pick the design whose wrong guess costs throughput, not correctness. Then found `query_timeout: 5000` (the M1/F-02 fix) already on the pool: the zombie was already impossible; nothing new to build | a legitimately >5s chunk under load burns an attempt on healthy work — three in a row and the cap fails a viable job. 5000ms was calibrated for M1 single-row lookups, not a 20-row chunk CTE; must be validated against measured chunk p99 under load (k6 chunk-size run promoted from perf tuning to correctness validation — same lesson as commandTimeout 100→500ms) |
 | 2026-07-09 | 4 | Removed `process.exit(-1)` from `pool.on('error')` (kept the log) | the docs-example handler executed the entire process because ONE idle pool client errored — a 2s blip, a PG restart, a failover all trigger it. It killed the reaper and dispatcher crons, invalidating the whole self-heal chain proven on 07-03: no surviving process = no recovery. The pool already absorbs dead clients and mints fresh connections; the exit overruled the mechanism designed for exactly this | a process that can't reach the DB stays alive and keeps taking traffic, returning errors (500 today; 503-translation deferred). "Don't take traffic" now has no mechanism at all — acceptable while all instances share one DB (nowhere better to route), revisit if per-instance DB paths ever diverge |
+| 2026-08-18 | 4 | Job creation (`createBatchInsertJobV2`) wrapped in a single transaction — a job exists with ALL its items or not at all. Fix the state, don't label it: NO zero-item guard in `getFinalCompletionStatus` | today the two inserts are unwrapped, so a throw on the items insert (or a death between them) leaves a `pending` job row with zero item rows. The reaper never sees it (already `pending`); the DISPATCHER picks it up ~2s later, the worker claims it, self-queries zero rows, skips the loop, and the aggregate reads 0/0/0 — where `notDelivered=0` is checked first, so the verdict is **`completed`**. A job with no items reports success. The alternative fix (guard the verdict function) leaves the bad state in the table and merely renames it; worse, once the transaction lands a zero-item job is UNREACHABLE, so the guard would be a branch that can never execute sitting next to a failure path it claims to cover — precisely the F-12 disease I just spent a session deleting | back to a checked-out client (`pool.connect` / BEGIN / COMMIT / ROLLBACK / `release` in finally) for this one path, partially walking back the 07-07 "no pinned client, `pool.query` everywhere" simplification. Acceptable because it wraps two fast inserts with no sleeps between them — it does not reintroduce connection-hoarding-through-sleeps. **DECIDED, NOT YET BUILT.** |
+| 2026-08-18 | 4 | Death-path (`attempts > cap`) `completed`/`partial` arm KEEPS the existing `error`; only the happy path clears it. Contract is now explicit: `error` = "the last thing that went wrong," and it may be present alongside any non-fresh verdict | closes a question open since 07-20. `partial` from the happy path and `partial` from the death path are NOT the same event: one means "some URLs were bad," the other means "the job kept dying and we gave up with work outstanding." The second has a REASON, and the `error` column is the only place that reason exists — the process delivering the verdict has no RAM from the run that broke, so wiping the column throws away the only explanation for why N URLs were never attempted | the same verdict string can arrive with or without an `error` depending on which code path delivered it, so a client author must handle both shapes and cannot tell from the status alone which one they got. Consistent with the 06-30 and 07-07 rule (branch on status first; `error` is never the state itself) — but it makes the happy path's CASE-WHEN clear the odd one out, not this branch |
+| 2026-08-18 | 4 | Short codes are GLOBAL per URL — the same `original_url` always resolves to the same code, fleet-wide, forever (consequence of `ON CONFLICT (original_url) DO UPDATE`). Accepted deliberately rather than left as an accident | the clause was added as a third duplicate-net on retry (`DO UPDATE SET original_url = EXCLUDED.original_url` rather than `DO NOTHING`, so the conflicting row still lands in `RETURNING` and its item gets marked completed — `DO NOTHING` would leave that item `pending` forever). But its real effect is a product rule: two clients shortening the same destination share one row, one id, one code. Nobody decided that; it arrived as a side effect, and side-effect semantics get expensive once there's data | blocks per-user analytics on a shared destination (two users share the code, so they share its click stats), per-user custom codes, and per-user expiry. Also means "same URL twice in one batch" collapses to one row. Fine for `shortn` today; revisit before per-user links or analytics ownership (M5/M7) — changing it later means a new uniqueness model and a migration |
 
 ---
 
@@ -339,7 +374,7 @@ CARRIED / DON'T FORGET:
 ### Module 4
 - [ ] Every piece of accidental state in a single-instance app
 - [x] Why distributed locks are not as simple as `SETNX` — a TTL releases on a blind clock: too short → it frees the lock under a worker that's still alive (two owners, duplicate work); too long → a genuinely dead worker's job stays frozen for the whole TTL, and each failed retry adds another full TTL. There's no safe middle because the TTL is guessing at something it can't observe — "is the worker alive?". A correct lock needs a *liveness signal*. The Postgres claim (`UPDATE...WHERE status='pending'`) has no timer — the row stays 'processing' until something *deliberately* moves it, so two owners is structurally impossible; the dead-worker case is handled by the reaper, which *checks a heartbeat* (observes liveness) rather than counting down a clock. The reaper is "a TTL done right" — its threshold is keyed to the heartbeat cadence (constant), not to job length.
-- [x] Atomic claim vs check-then-act — `UPDATE...WHERE id AND status='pending'` fuses the check into the locked write, so the loser blocks, Postgres re-evaluates the predicate against the winner's committed row (EvalPlanQual recheck), it fails, rowCount=0 → walk away. A SELECT-then-UPDATE races because the SELECT holds no lock: both workers read 'pending' unlocked, and the second UPDATE (`WHERE id` only, no status) blindly overwrites — the claim decision was made before any lock existed. The lock at UPDATE time is too late; the decision must live *inside* the lock. rowCount is the signal; RETURNING id feeds the winner. Same shape as an idempotent `ON CONFLICT DO NOTHING` — let the single atomic statement *be* the check, then read the result. (Reaper resets to 'pending', so re-claim == claim: one path, no special case.) **PROVEN end-to-end in the 07-03 crash test: kill mid-job → sibling reaper flipped → sibling dispatcher re-claimed → resume via committed item status → 60/60 completed, 0 duplicate URLs.**
+- [x] Atomic claim vs check-then-act — `UPDATE...WHERE id AND status='pending'` fuses the check into the locked write, so the loser blocks, Postgres re-evaluates the predicate against the winner's committed row (EvalPlanQual recheck), it fails, rowCount=0 → walk away. A SELECT-then-UPDATE races because the SELECT holds no lock: both workers read 'pending' unlocked, and the second UPDATE (`WHERE id` only, no status) blindly overwrites — the claim decision was made before any lock existed. The lock at UPDATE time is too late; the decision must live *inside* the lock. rowCount is the signal; RETURNING id feeds the winner. Same shape as an idempotent `ON CONFLICT DO NOTHING` — let the single atomic statement *be* the check, then read the result. (Reaper resets to 'pending', so re-claim == claim: one path, no special case.) **PROVEN end-to-end in the 07-03 crash test: kill mid-job → sibling reaper flipped → sibling dispatcher re-claimed → resume via committed item status → 60/60 completed, 0 duplicate URLs.** Corollary re-derived 08-18: the loser burns NO attempt — no row matched, no increment — so only the winner pays.
 - [ ] Fencing tokens — what they prevent that TTLs can't
 - [ ] Stateless vs stateful services, sharply
 - [x] Bimodal latency / circuit-breaker split-brain — why per-instance breaker state splits one endpoint's latency histogram into two humps (fast-fail open breaker vs slow-fail closed breaker waiting out commandTimeout), and why a single p95 lands in the empty valley between them and lies
@@ -439,3 +474,4 @@ CARRIED / DON'T FORGET:
 | 2026-07-08 | Xh | M4 S3 ✅ | VERIFIED the cap: migration landed; Run A green (3 attempts, catch self-terminates); Run B ×3 scenarios green (completed / partial / failed+epitaph at attempts=4). Fixed stale-local-attempts ordering bug (copy from RETURNING before anything can throw), catch boundary <= → <, and F-11 (cap verdict now derived from items aggregate, pending counted as undelivered). Earned: verdict must come from durable state because the verdict-writer and work-doer can be different processes | recovery-write guard; death-path error-clearing decision; Stage 4; k6 chunk size |
 | 2026-07-09 | Xh | M4 S3 ✅ CLOSED | Recovery-write guard + logger format ([job id] prefix, attempt in outer catch); root-caused app-dies-with-PG to process.exit(-1) in pool.on('error') — removed, self-heal chain now survives DB death; kill test: containers survived, attempt 1 failed (ENOTFOUND), attempt 2 completed | guard catch-branch never exercised; 503 translation; death-path error-clearing; Stage 4; k6 chunk size |
 | 2026-07-20 | Xh | M4 S4 🟡 | Stage 4 first blood: discovered the 07-09 guard was DEAD CODE (sync try/catch around un-awaited promise in dispatcher — F-12); rebuilt guard in worker's catch w/ log-before-write ordering; EXECUTED the guard branch for the first time with a real dead-DB kill → witness preserved, reaper flipped, dispatcher re-claimed, 60/60, attempts=2, 0 dups, error=NULL (policy, not luck); derived worst-case resume = 60s reaper + 2s dispatcher stacked; F-12 root cause articulated & logged. Then: claim-then-die gap cleared by design review (claim = first heartbeat, 3× margin protects slow starters); zombie-worker analysis (heartbeat = liveness ≠ progress) → Option B (bound the operation) over progress-reaper (false-positive asymmetry: waste vs two-owner corruption) → found query_timeout:5000 already covers it; k6 chunk run promoted to load-bearing (validates the 5000ms) | RUNNING the k6 chunk-size calibration; deciding if S4 is done (503 translation? death-path error-clearing?); fencing-tokens side-read (Option A = the anchor) |
+| 2026-08-18 | ~2h | M4 S4 🟡 | COLD START after a 28-day gap — read the worker line by line against the notes instead of trusting either. Audit clean (guard in worker's catch, dispatcher's dead try/catch gone, query_timeout:5000 present). 3 new findings: (1) ORPHAN JOB — unwrapped two-write creation can leave a `pending` job with zero items that the DISPATCHER picks up (not the reaper) and the 0/0/0 aggregate reports as `completed`; fix = transaction, explicitly NOT a verdict-function guard (would be an unprovable branch = F-12 disease). (2) INNER CATCH mislabels a transient DB blip as permanent item `failed` and nothing ever un-fails them — today it self-corrects only because the second write also fails, i.e. correctness by timing. (3) `ON CONFLICT (original_url)` silently made short codes global-per-URL — a product rule nobody decided. 3 D-log rows written (2 decided, 1 decided-not-built). Designed the k6 chunk measurement: time it in NODE (pool-wait is inside the timeout's clock; pg_stat_statements has no percentiles and can't see it), sweep concurrent WORKERS not RPS, chunk size is the knob rather than raising the timeout | ACTUALLY RUNNING k6 (blocked on: no way to create N concurrent jobs on demand); building the creation transaction; the transient-failed-items bug; 503 translation; fencing-tokens side-read |
