@@ -1,51 +1,77 @@
 ## Current Position
-Current Position: Module 4, Stage 4 — IN PROGRESS. Returned after a 28-day
-  gap (07-20 → 08-18). Session was a COLD START: re-read the whole worker
-  line by line against the notes. Notes held up — guard is in the worker's
-  catch, dispatcher's dead try/catch is gone, query_timeout:5000 is on the
-  pool. Re-read turned up 3 new findings (2 D-logged, 1 carried).
+Current Position: Module 4, Stage 4 — IN PROGRESS. THE K6 CHUNK RUN IS DONE
+  (08-21). Chunk CTE measured under real concurrency at 6 / 12 / 24 jobs:
+  max 2ms / 4ms / 18ms against a 5000ms timeout. `query_timeout: 5000` is
+  VALIDATED at this scale; chunk size stays 20. Nothing changed — that was
+  the correct outcome, and it is now a measured decision instead of an
+  unexamined default.
 Module: Module 4
 Stage: 4 (break the fix) 🟡
-Last session: 2026-08-18
-Next action: THE K6 CHUNK-SIZE RUN. Measurement is designed (see below);
-  blocker is that there's no way yet to create N concurrent jobs on demand.
-  Solve that first, then sweep concurrency 6 → 12 → 24.
+Last session: 2026-08-21
+Next action: pick the next Stage-4 break from the un-attacked list. Leading
+  candidate: the TRANSIENT-FAILED-ITEMS bug (inner catch stamps 20 healthy
+  URLs `failed` on a DB blip and nothing ever un-fails them; currently
+  correct only by timing). Also outstanding: build the creation transaction
+  (decided 08-18, not built), 503 translation.
 
-### Measurement design for the k6 chunk run (decided 08-18, not yet run)
-  - The number to measure is the CHUNK CTE duration under concurrent load,
-    to validate `query_timeout: 5000`.
-  - MEASURE IN NODE, NOT POSTGRES. `pg_stat_statements` gives mean/min/max
-    but NO percentiles, and it only sees execution time inside PG. The
-    timeout is enforced by the pg client and its clock starts at
-    `pool.query()` — which INCLUDES pool-wait. A chunk can wait 3s for a
-    connection, execute in 500ms, and still trip a 5000ms timeout while
-    PG swears everything is fine. Measure at the layer that enforces the
-    limit.
-  - Implementation: `t0 = Date.now()` around the chunk CTE, log the delta
-    on the SUCCESS path (today it's only logged on failure). One JSON line
-    per chunk carrying: duration, jobId, chunk index, instanceId (already
-    on every line via the M4-S2 logger), timestamp. JSON so p99 is a
-    5-line script, not a regex at 11pm.
-  - k6 at 1000 VUs is the WRONG TOOL here. The endpoint returns 202 in
-    ~5ms — the response says nothing about whether work happened. 1000 VUs
-    would produce thousands of queued pending jobs, a dispatcher with no
-    LIMIT firing a worker per job per tick per instance, and chunk timings
-    that measure pool-queueing, not write cost. The knob is CONCURRENT
-    WORKERS, not RPS. Create a controlled N jobs and let the dispatcher
-    pick them up.
-  - Reading the result: p99 is a CUTOFF, not an average — it's blind to
-    everything above it. Also need max, and ideally p99.9. And the
-    per-chunk failure rate compounds per JOB: 1% per chunk ≈ 3% for a
-    60-URL job (3 chunks), ≈22% for a 500-URL job (25 chunks). The client
-    experiences jobs, not chunks.
-  - The knob to reach for if the number is uncomfortable is CHUNK SIZE
-    (20 → smaller), NOT raising the timeout. Raising it walks back the
-    F-02 fail-fast property; shrinking the chunk pulls the measured number
-    down AND shrinks the blast radius of one bad roll (20 URLs → 5).
-    Cost: more round trips, invisible at this scale.
-  - The punishment is a CLIFF, not a slope: 4999ms completes, 5001ms
-    cancels and stamps 20 healthy URLs `failed`. 30s is punished
-    identically to 5001ms. That asymmetry is why a thin margin is unsafe.
+### K6 CHUNK RUN — RESULT (ran 2026-08-21)
+
+| rung (concurrent jobs) | chunks | max chunk | wall clock for the whole burst |
+|---|---|---|---|
+| 6  | 18 | 2ms  | 9ms  |
+| 12 | 36 | 4ms  | 36ms |
+| 24 | 72 | 18ms | 75ms |
+
+  - VERDICT: `query_timeout: 5000` holds. Worst observed chunk = 18ms →
+    ~277× margin. CHUNK SIZE STAYS 20. No change shipped.
+  - THE CURVE IS NOT LINEAR: 2 → 4 → 18 for 2× steps each. The last step is
+    4.5× for 2× the load. So this measures MARGIN, not HEADROOM — where the
+    wall is remains unknown, and the punishment is a CLIFF not a slope
+    (4999ms completes; 5001ms cancels and stamps 20 healthy URLs `failed`).
+  - THE 18ms SPIKE was 7 chunks landing inside 4ms of each other, all of
+    them chunk 0, ACROSS TWO INSTANCES. Two independent Node processes slow
+    at the same instant by the same amount → the shared thing is the cause,
+    i.e. Postgres, not an event loop. Attributed to the creation-write
+    backlog: 24 POSTs × 60 item rows ≈ 1,440 inserts landing moments
+    earlier. Every chunk after index 0 dropped back to 2–6ms — the backlog
+    clears in ~4ms. **Attributed by inference, NOT proven** — proving it
+    means timing the creation insert too and checking the overlap.
+  - WHY THE FIRST RUNGS MEASURED NOTHING: 6 and 12 jobs never produced 6 or
+    12 concurrent chunks. ~2–3 chunks in flight, `pg_stat_activity` showed
+    1–2 active, pool of 10 mostly idle. A Node instance can only SEND one
+    query at a time, and it spends most of its life not-querying (parsing
+    POSTs, building 60-URL arrays, randomBytes ×60, writing item rows). The
+    apps could not feed the DB fast enough to make it struggle. Real
+    contention only appeared at 24 — and even then it was creation-write
+    pressure, not chunk-vs-chunk.
+  - CORRECTION TO THE 08-18 DESIGN NOTE (it was WRONG): the `query_timeout`
+    clock does NOT include pool-wait. `pool.query()` is two steps —
+    `pool.connect()` (governed by `connectionTimeoutMillis`) then
+    `client.query()` (governed by `query_timeout`). The timer is armed
+    AFTER a connection is in hand. So the "waits 3s for a connection,
+    executes in 500ms, trips 5000ms" scenario cannot happen. Measuring in
+    Node is still correct, but for a sharper reason: what the timeout
+    enforces is send → reply-handled (PG time + network + Node's delay in
+    noticing the reply), and `pg_stat_statements` sees only the middle
+    slice — plus it gives mean/min/max, never a percentile.
+  - HARNESS (this was the 08-18 blocker, now solved): k6 with
+    `executor: "per-vu-iterations"`, `vus: N`, `iterations: 1`. All N VUs
+    fire one POST together — a starting gun, not RPS. k6's own numbers are
+    irrelevant (it measures the 202, ~5ms); the data lives in the app logs.
+    Per-VU unique URLs are MANDATORY (`vu-${__VU}/...`) or every job fights
+    the same rows through `ON CONFLICT` and you measure lock queueing on
+    deliberately identical data. Tag the run too (`RUN=r6/r12/r24`) or
+    later rungs take the DO UPDATE path instead of the insert path and the
+    rungs stop being comparable.
+  - INSTRUMENTATION NOW PERMANENT: `t0 = Date.now()` OUTSIDE the chunk
+    try (so a failure gets a duration too), one JSON line per chunk —
+    `chunk_ok` / `chunk_fail` with jobId, chunk index, durationMs, error;
+    instanceId rides along via the M4-S2 logger. JSON so p99 is a 5-line
+    script, not a regex at 11pm.
+  - CAVEAT ON THE WHOLE RESULT: laptop, Docker, unloaded PG, 60-URL jobs,
+    repeated URLs on some runs. 277× absorbs a lot of that, but it is not
+    proof at production scale.
+
 
 Verified this session (2026-08-18) — cold-start code read:
   - COLD-START RITUAL after a long gap: read the CODE against the NOTES
@@ -101,9 +127,30 @@ Verified this session (2026-08-18) — cold-start code read:
     doesn't." Reaper is the floor, not the normal path.
 
 CARRIED / DON'T FORGET:
-- k6 to pin chunk size — STILL THE MAIN EVENT. Measurement designed
-  (see block above); BLOCKER: no way to create N concurrent jobs on
-  demand. Solve that first.
+- ~~k6 to pin chunk size — THE MAIN EVENT~~ — DONE 2026-08-21. Result block
+  above; D-logged. Chunk size 20 and query_timeout 5000 both unchanged.
+- NEW: the `AND status = 'pending'` on the inner catch's recovery write is
+  LOAD-BEARING, and not for the reason it was written. It was added to
+  avoid stomping an existing error. What it ALSO buys: `query_timeout` is
+  a client-side timer — Node gives up and stamps items `failed` while the
+  abandoned CTE may still commit server-side. If the CTE commits first the
+  predicate no longer matches (rowCount=0); if the catch's UPDATE arrives
+  first it BLOCKS on the CTE's row locks and PG re-checks the predicate
+  against the winner's committed row (EvalPlanQual again, same referee as
+  the atomic claim) → also rowCount=0. Either ordering is safe. DO NOT
+  "simplify" this predicate away as redundant.
+- NEW: the curve is non-linear (2 → 4 → 18ms for 6 → 12 → 24). Headroom
+  past 24 concurrent jobs is UNMEASURED. Re-run the ladder if job volume,
+  job size, or DB hardware changes.
+- NEW: the 18ms spike is attributed to creation-write backlog by inference.
+  To prove it: time the creation insert as well and check whether creation
+  writes were genuinely in flight during the spike window.
+- UNEXPLAINED (08-19, vanished rather than fixed): a run where six workers
+  logged chunks 0 and 20 but never 40, then a second cluster of jobs
+  started 37s later — timing that fits reaper (15s stale + ~60s tick) plus
+  dispatcher re-claim. Never confirmed; `bulk_jobs.attempts` on those rows
+  would have settled it. If it reappears at higher rungs, that query is
+  the way in.
 - NEW: inner catch stamps items `failed` on a TRANSIENT DB error and
   nothing ever un-fails them. Currently self-corrects only by timing
   (second write also fails). Un-attacked. Candidate Stage-4 break.
@@ -126,8 +173,9 @@ CARRIED / DON'T FORGET:
 **Open questions / things I'm stuck on:**
 - Known gap (scale, deferred): N dispatcher pollers race per tick → M5 (SKIP LOCKED).
 - Known gap: 30s max request origin unconfirmed — carried from M3.
-- Is Stage 4 done once k6 lands? Remaining un-attacked candidates: the
-  transient-failed-items bug (above), 503 translation.
+- Is Stage 4 done? k6 has landed. Remaining un-attacked candidates: the
+  transient-failed-items bug (above), the creation transaction (decided,
+  not built), 503 translation.
 
 ---
 
@@ -138,7 +186,7 @@ CARRIED / DON'T FORGET:
 | 1 | Single Box | ✅ Done | 2026-04-27 | 2026-04-29 | — |
 | 2 | API Design | ✅ Done | 2026-05-01 | 2026-05-12 | — |
 | 3 | Caching | ✅ Done| 2026-05-12 | 2026-06-11 | — |
-| 4 | Horizontal Scale | 🟡 | 2026-06-11 | — | S3 ✅ closed 07-09; S4 🟡 in progress (guard branch proven 07-20, F-12; cold-start re-audit 08-18 clean, 3 new findings); S5/S6/S7 remain |
+| 4 | Horizontal Scale | 🟡 | 2026-06-11 | — | S3 ✅ closed 07-09; S4 🟡 in progress (guard branch proven 07-20, F-12; cold-start re-audit 08-18 clean, 3 new findings; k6 chunk run DONE 08-21 — 5000ms validated, chunk size 20 unchanged); S5/S6/S7 remain |
 | 5 | Async Work | ⬜ | — | — | — |
 | 6 | Data: Replication, Sharding, Migrations | ⬜ | — | — | — |
 | 7 | Auth & Security | ⬜ | — | — | — |
@@ -207,6 +255,8 @@ CARRIED / DON'T FORGET:
 | 2026-08-18 | 4 | Job creation (`createBatchInsertJobV2`) wrapped in a single transaction — a job exists with ALL its items or not at all. Fix the state, don't label it: NO zero-item guard in `getFinalCompletionStatus` | today the two inserts are unwrapped, so a throw on the items insert (or a death between them) leaves a `pending` job row with zero item rows. The reaper never sees it (already `pending`); the DISPATCHER picks it up ~2s later, the worker claims it, self-queries zero rows, skips the loop, and the aggregate reads 0/0/0 — where `notDelivered=0` is checked first, so the verdict is **`completed`**. A job with no items reports success. The alternative fix (guard the verdict function) leaves the bad state in the table and merely renames it; worse, once the transaction lands a zero-item job is UNREACHABLE, so the guard would be a branch that can never execute sitting next to a failure path it claims to cover — precisely the F-12 disease I just spent a session deleting | back to a checked-out client (`pool.connect` / BEGIN / COMMIT / ROLLBACK / `release` in finally) for this one path, partially walking back the 07-07 "no pinned client, `pool.query` everywhere" simplification. Acceptable because it wraps two fast inserts with no sleeps between them — it does not reintroduce connection-hoarding-through-sleeps. **DECIDED, NOT YET BUILT.** |
 | 2026-08-18 | 4 | Death-path (`attempts > cap`) `completed`/`partial` arm KEEPS the existing `error`; only the happy path clears it. Contract is now explicit: `error` = "the last thing that went wrong," and it may be present alongside any non-fresh verdict | closes a question open since 07-20. `partial` from the happy path and `partial` from the death path are NOT the same event: one means "some URLs were bad," the other means "the job kept dying and we gave up with work outstanding." The second has a REASON, and the `error` column is the only place that reason exists — the process delivering the verdict has no RAM from the run that broke, so wiping the column throws away the only explanation for why N URLs were never attempted | the same verdict string can arrive with or without an `error` depending on which code path delivered it, so a client author must handle both shapes and cannot tell from the status alone which one they got. Consistent with the 06-30 and 07-07 rule (branch on status first; `error` is never the state itself) — but it makes the happy path's CASE-WHEN clear the odd one out, not this branch |
 | 2026-08-18 | 4 | Short codes are GLOBAL per URL — the same `original_url` always resolves to the same code, fleet-wide, forever (consequence of `ON CONFLICT (original_url) DO UPDATE`). Accepted deliberately rather than left as an accident | the clause was added as a third duplicate-net on retry (`DO UPDATE SET original_url = EXCLUDED.original_url` rather than `DO NOTHING`, so the conflicting row still lands in `RETURNING` and its item gets marked completed — `DO NOTHING` would leave that item `pending` forever). But its real effect is a product rule: two clients shortening the same destination share one row, one id, one code. Nobody decided that; it arrived as a side effect, and side-effect semantics get expensive once there's data | blocks per-user analytics on a shared destination (two users share the code, so they share its click stats), per-user custom codes, and per-user expiry. Also means "same URL twice in one batch" collapses to one row. Fine for `shortn` today; revisit before per-user links or analytics ownership (M5/M7) — changing it later means a new uniqueness model and a migration |
+| 2026-08-21 | 4 | Chunk size STAYS 20 and `query_timeout` STAYS 5000 — measured, not assumed. Max chunk CTE = 18ms at 24 concurrent jobs (2ms @6, 4ms @12) | closes the calibration question opened 07-20, where the 5000ms was flagged as an M1 single-row number being asked to cover a 20-row CTE. It covers it: ~277× margin at the worst observed chunk. Explicitly REJECTED the tempting inverse experiment ("find the biggest chunk that fits in 5000ms") — chunk size is a BLAST-RADIUS knob, not a throughput knob. One timeout stamps every URL in the chunk `failed`, so 20 costs 20 and 200 costs 200; round trips are invisible at this scale, so there is nothing to buy by sizing up, and a 4000ms chunk would sit one hiccup from a cliff | the number is laptop-scale: Docker, unloaded PG, 60-URL jobs, and the measured curve is NON-LINEAR (2 → 4 → 18 for 2× steps), so headroom past 24 concurrent jobs is unknown. Also: the 18ms spike is attributed to creation-write backlog by inference, not proof. Re-run the ladder if volume, job size, or DB hardware changes |
+| 2026-08-21 | 4 | The `AND status = 'pending'` predicate on the inner catch's recovery write is KEPT and documented as load-bearing, not tidied away | it was written to mean "don't stomp an existing error." Its real value is bigger: `query_timeout` is a CLIENT-side timer, so Node can throw and stamp 20 items `failed` while the abandoned CTE is still committing in PG. The predicate makes both orderings safe — CTE-commits-first means the predicate no longer matches; catch-arrives-first means it BLOCKS on the CTE's row locks and PG re-checks it against the winner's committed row (EvalPlanQual), so rowCount=0 either way. Without it, a completed chunk could be overwritten to `failed` with live short codes sitting in `urls` | it reads as redundant ("we already know they're pending"), so it is exactly the kind of clause a future refactor deletes. Costs nothing; the only price is that its importance is invisible from the code and lives here instead |
 
 ---
 
@@ -475,3 +525,4 @@ CARRIED / DON'T FORGET:
 | 2026-07-09 | Xh | M4 S3 ✅ CLOSED | Recovery-write guard + logger format ([job id] prefix, attempt in outer catch); root-caused app-dies-with-PG to process.exit(-1) in pool.on('error') — removed, self-heal chain now survives DB death; kill test: containers survived, attempt 1 failed (ENOTFOUND), attempt 2 completed | guard catch-branch never exercised; 503 translation; death-path error-clearing; Stage 4; k6 chunk size |
 | 2026-07-20 | Xh | M4 S4 🟡 | Stage 4 first blood: discovered the 07-09 guard was DEAD CODE (sync try/catch around un-awaited promise in dispatcher — F-12); rebuilt guard in worker's catch w/ log-before-write ordering; EXECUTED the guard branch for the first time with a real dead-DB kill → witness preserved, reaper flipped, dispatcher re-claimed, 60/60, attempts=2, 0 dups, error=NULL (policy, not luck); derived worst-case resume = 60s reaper + 2s dispatcher stacked; F-12 root cause articulated & logged. Then: claim-then-die gap cleared by design review (claim = first heartbeat, 3× margin protects slow starters); zombie-worker analysis (heartbeat = liveness ≠ progress) → Option B (bound the operation) over progress-reaper (false-positive asymmetry: waste vs two-owner corruption) → found query_timeout:5000 already covers it; k6 chunk run promoted to load-bearing (validates the 5000ms) | RUNNING the k6 chunk-size calibration; deciding if S4 is done (503 translation? death-path error-clearing?); fencing-tokens side-read (Option A = the anchor) |
 | 2026-08-18 | ~2h | M4 S4 🟡 | COLD START after a 28-day gap — read the worker line by line against the notes instead of trusting either. Audit clean (guard in worker's catch, dispatcher's dead try/catch gone, query_timeout:5000 present). 3 new findings: (1) ORPHAN JOB — unwrapped two-write creation can leave a `pending` job with zero items that the DISPATCHER picks up (not the reaper) and the 0/0/0 aggregate reports as `completed`; fix = transaction, explicitly NOT a verdict-function guard (would be an unprovable branch = F-12 disease). (2) INNER CATCH mislabels a transient DB blip as permanent item `failed` and nothing ever un-fails them — today it self-corrects only because the second write also fails, i.e. correctness by timing. (3) `ON CONFLICT (original_url)` silently made short codes global-per-URL — a product rule nobody decided. 3 D-log rows written (2 decided, 1 decided-not-built). Designed the k6 chunk measurement: time it in NODE (pool-wait is inside the timeout's clock; pg_stat_statements has no percentiles and can't see it), sweep concurrent WORKERS not RPS, chunk size is the knob rather than raising the timeout | ACTUALLY RUNNING k6 (blocked on: no way to create N concurrent jobs on demand); building the creation transaction; the transient-failed-items bug; 503 translation; fencing-tokens side-read |
+| 2026-08-21 | ~3h | M4 S4 🟡 | RAN THE K6 CHUNK LADDER — the blocker from 08-18 is gone and Stage 4's main event is closed. Solved "N concurrent jobs on demand" with k6 `per-vu-iterations` (vus=N, iterations=1) as a starting gun rather than an RPS load test; per-VU unique URLs so jobs don't collide on `ON CONFLICT`. Made the instrumentation permanent: `t0` outside the chunk try, JSON `chunk_ok`/`chunk_fail` lines with duration on BOTH paths (caught a copy-paste where the catch logged `chunk_ok` — a mislabelled line in a failure path that had never run, F-12's cousin). Results 6/12/24 → max 2/4/18ms vs a 5000ms timeout; kept chunk size 20 and the timeout unchanged, and logged WHY sizing up is the wrong search (blast radius, not throughput). Learned the harness lesson the hard way: 6 and 12 jobs produced only ~2 concurrent chunks because a Node instance can only send one query at a time and spends most of its life not-querying — the apps couldn't feed PG hard enough to make it struggle. Traced the 18ms spike to two DIFFERENT instances slowing simultaneously → cause must be the shared thing (PG), attributed to ~1,440 creation-write inserts from the burst. Corrected the 08-18 note claiming `query_timeout` includes pool-wait (it doesn't — the timer arms after `pool.connect` returns). Noticed the inner catch's `status='pending'` predicate is load-bearing against the abandoned-CTE race. 2 D-log rows | the transient-failed-items bug (still un-attacked, now the leading Stage-4 candidate); building the creation transaction; proving rather than inferring the creation-write backlog; the unexplained 08-19 missing-chunk-40 / 37s-gap anomaly; 503 translation; fencing-tokens side-read |
