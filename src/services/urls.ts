@@ -502,6 +502,7 @@ export async function processBatchInsertJobV2(
   const batch_size = 20;
   let heartBeatInterval: NodeJS.Timeout | undefined;
   let attempts = 0;
+  let t0;
 
   try {
     const result = await pool.query(
@@ -555,6 +556,7 @@ export async function processBatchInsertJobV2(
         );
       } // Wait for 10 seconds before processing the batch
 
+      t0 = Date.now();
       try {
         await pool.query(
           `WITH inserted AS (
@@ -571,12 +573,32 @@ export async function processBatchInsertJobV2(
           [batch.map(() => randomBytes(6).toString("hex")), batch, jobId],
         );
 
+        const delta = Date.now() - t0;
+        logger(
+          JSON.stringify({
+            event: "chunk_ok",
+            jobId,
+            chunk: i,
+            durationMs: delta,
+          }),
+        );
+
         if (CHUNK_SLEEP_TIME_MS) {
           await new Promise((resolve) =>
             setTimeout(resolve, CHUNK_SLEEP_TIME_MS),
           );
         }
       } catch (error) {
+        const delta = Date.now() - t0;
+        logger(
+          JSON.stringify({
+            event: "chunk_failed",
+            jobId,
+            chunk: i,
+            durationMs: delta,
+            error: error instanceof Error ? error.message : "Unknown error",
+          }),
+        );
         logger(
           `[job ${jobId}] chunk failed (items ${i}-${i + batch.length}): ${error instanceof Error ? error.message : error}`,
         );
