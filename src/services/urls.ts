@@ -10,6 +10,8 @@ import { CircuitBreakerError } from "../errors/circuit.error.js";
 import redis, { redisCircuitBreaker } from "../db/redis.js";
 import { logger } from "../utils.ts/logger.js";
 import { getFinalCompletionStatus } from "../utils.ts/url.js";
+import { DatabaseError } from "pg";
+import { CustomError } from "../errors/custom.error.js";
 
 const CHUNK_SLEEP_TIME_MS = process.env.CHUNK_SLEEP_MS
   ? parseInt(process.env.CHUNK_SLEEP_MS!, 10)
@@ -558,6 +560,18 @@ export async function processBatchInsertJobV2(
 
       t0 = Date.now();
       try {
+        if (
+          process.env.NODE_ENV === "development" &&
+          process.env.FORCE_CHUNK_ERROR === "before" &&
+          i === 0 &&
+          attempts === 1
+        ) {
+          throw new CustomError(
+            "Forced chunk error for testing purposes (before)",
+            "23123",
+          );
+        }
+
         await pool.query(
           `WITH inserted AS (
           INSERT INTO urls (code, original_url)
@@ -583,6 +597,15 @@ export async function processBatchInsertJobV2(
           }),
         );
 
+        if (
+          process.env.NODE_ENV === "development" &&
+          process.env.FORCE_CHUNK_ERROR === "after" &&
+          i === 0 &&
+          attempts === 1
+        ) {
+          throw new Error("Forced chunk error for testing purposes (after)");
+        }
+
         if (CHUNK_SLEEP_TIME_MS) {
           await new Promise((resolve) =>
             setTimeout(resolve, CHUNK_SLEEP_TIME_MS),
@@ -590,26 +613,47 @@ export async function processBatchInsertJobV2(
         }
       } catch (error) {
         const delta = Date.now() - t0;
+        const errorCode =
+          error instanceof DatabaseError || error instanceof CustomError
+            ? error.code
+            : "UNKNOWN_ERROR";
+
+        const permanentErrors = errorCode?.startsWith("23");
+
         logger(
           JSON.stringify({
             event: "chunk_failed",
             jobId,
             chunk: i,
             durationMs: delta,
+            errorCode,
+            classification: permanentErrors ? "permanent" : "transient",
             error: error instanceof Error ? error.message : "Unknown error",
           }),
         );
         logger(
           `[job ${jobId}] chunk failed (items ${i}-${i + batch.length}): ${error instanceof Error ? error.message : error}`,
         );
-        await pool.query(
-          `UPDATE bulk_job_items SET status = 'failed', error = $1 WHERE job_id = $2 AND url = ANY($3::text[]) AND status = 'pending'`,
-          [
-            error instanceof Error ? error.message : "Unknown error",
-            jobId,
-            batch,
-          ],
-        );
+        console.log("premanentErrors", permanentErrors, "errorCode", errorCode);
+        if (permanentErrors) {
+          try {
+            await pool.query(
+              `UPDATE bulk_job_items SET status = 'failed', error = $1 WHERE job_id = $2 AND url = ANY($3::text[]) AND status = 'pending'`,
+              [
+                error instanceof Error ? error.message : "Unknown error",
+                jobId,
+                batch,
+              ],
+            );
+            continue; // Continue processing the next batch
+          } catch (error) {
+            logger(
+              `[job ${jobId}] failed to mark items as failed after permanent error: ${error instanceof Error ? error.message : error}`,
+            );
+          }
+        }
+
+        throw error; // Rethrow to be caught by the outer try-catch for job-level handling
       }
     }
 

@@ -1,18 +1,20 @@
 ## Current Position
-Current Position: Module 4, Stage 4 — IN PROGRESS. THE K6 CHUNK RUN IS DONE
-  (08-21). Chunk CTE measured under real concurrency at 6 / 12 / 24 jobs:
-  max 2ms / 4ms / 18ms against a 5000ms timeout. `query_timeout: 5000` is
-  VALIDATED at this scale; chunk size stays 20. Nothing changed — that was
-  the correct outcome, and it is now a measured decision instead of an
-  unexamined default.
+Current Position: Module 4, Stage 4 — IN PROGRESS. THE TRANSIENT-FAILED-ITEMS BUG IS
+  FIXED AND PROVEN (08-24, F-13). Chunk failures now classify on `err.code`: `23xxx`
+  permanent (stamp + continue), everything else transient (rethrow into the outer catch's
+  retry path). Both branches executed deliberately via a new `FORCE_CHUNK_ERROR` hook —
+  the bug is no longer correct-by-timing. Also settled a 7-week notes-vs-code drift: the
+  CTE worker is the default, amending 07-02.
+  Prior session (08-21): the k6 chunk ladder validated `query_timeout: 5000` at
+  6 / 12 / 24 concurrent jobs (max 2 / 4 / 18ms); chunk size stays 20.
 Module: Module 4
 Stage: 4 (break the fix) 🟡
-Last session: 2026-08-21
-Next action: pick the next Stage-4 break from the un-attacked list. Leading
-  candidate: the TRANSIENT-FAILED-ITEMS bug (inner catch stamps 20 healthy
-  URLs `failed` on a DB blip and nothing ever un-fails them; currently
-  correct only by timing). Also outstanding: build the creation transaction
-  (decided 08-18, not built), 503 translation.
+Last session: 2026-08-24
+Next action: two Stage-4 candidates left, both small. (1) The CREATION TRANSACTION —
+  decided 08-18, still not built; wrap `createBatchInsertJobV2`'s two inserts so a
+  zero-item `pending` job is unreachable. This is now the OLDEST outstanding item.
+  (2) 503 translation for DB-down errors. Then ask whether Stage 4 closes. Note the new
+  `21000` gap is a Stage-4-shaped question too.
 
 ### K6 CHUNK RUN — RESULT (ran 2026-08-21)
 
@@ -105,6 +107,9 @@ Verified this session (2026-08-18) — cold-start code read:
     back a moment earlier, the write lands and 20 healthy URLs are dead
     for good. **Correctness by timing — same smell as F-12, where the
     07-09 test passed because PG returned at the right moment.**
+    → **FIXED 2026-08-24, see F-13.** Chunk failures now classify on
+    `err.code`: `23xxx` permanent (stamp + continue), everything else
+    transient (touch nothing, rethrow to the outer catch's retry path).
   - ON CONFLICT (original_url) is a PRODUCT decision hiding in a DB
     clause (new): same URL always maps to the same code, fleet-wide,
     forever. Arrived as a side effect of duplicate-protection on retry;
@@ -139,6 +144,9 @@ CARRIED / DON'T FORGET:
   against the winner's committed row (EvalPlanQual again, same referee as
   the atomic claim) → also rowCount=0. Either ordering is safe. DO NOT
   "simplify" this predicate away as redundant.
+  **PROVEN 2026-08-24** (F-13 `after` run: throw AFTER the CTE committed →
+  `chunk_failed` logged at 4ms, predicate matched nothing, 60/60 completed,
+  short codes live). Retired from reasoned to demonstrated.
 - NEW: the curve is non-linear (2 → 4 → 18ms for 6 → 12 → 24). Headroom
   past 24 concurrent jobs is UNMEASURED. Re-run the ladder if job volume,
   job size, or DB hardware changes.
@@ -151,9 +159,9 @@ CARRIED / DON'T FORGET:
   dispatcher re-claim. Never confirmed; `bulk_jobs.attempts` on those rows
   would have settled it. If it reappears at higher rungs, that query is
   the way in.
-- NEW: inner catch stamps items `failed` on a TRANSIENT DB error and
-  nothing ever un-fails them. Currently self-corrects only by timing
-  (second write also fails). Un-attacked. Candidate Stage-4 break.
+- ~~inner catch stamps items `failed` on a TRANSIENT DB error and nothing
+  ever un-fails them~~ — **FIXED 2026-08-24, F-13.** Classifier on
+  `err.code`; both branches executed deliberately. D-logged.
 - NEW: wrap job creation in a transaction (decided 08-18, not yet built).
 - Optional receipt: live-test that query_timeout actually fires on the
   chunk CTE path (design review says yes; every link proven separately).
@@ -169,13 +177,26 @@ CARRIED / DON'T FORGET:
 - ~~Death-path partial/completed arm does NOT clear `error`~~ — DECIDED
   2026-08-18, keep it. D-logged.
 - bulk_job_results DROP TABLE — separate later migration AFTER API cutover.
+- NEW (F-13 fallout): `21000` — "ON CONFLICT DO UPDATE command cannot affect row a
+  second time" — fires when the SAME URL appears twice inside one chunk. It is a
+  PERMANENT bad-batch error, but `21` doesn't start with `23`, so the classifier calls
+  it transient, rethrows, and burns all 3 attempts on a job that can never succeed.
+  The k6 harness dodged this by generating per-VU unique URLs; a real client won't.
+  Un-attacked. This is the concrete instance of "the allowlist is wrong by omission."
+- NEW: the real `23505` path has still never executed — the permanent branch was proven
+  with a hand-constructed `CustomError` carrying code `23123`, which is not a real
+  SQLSTATE. `instanceof` and the branch are proven; a genuine Postgres integrity
+  rejection is not. Cheap receipt available: seed a duplicate `code` collision or add a
+  temporary CHECK constraint.
+- Cleanup: stray `console.log("premanentErrors", ...)` left in the chunk catch (typo and
+  all). Shadowed `error` in the nested guard's catch — rename to `writeError`.
 
 **Open questions / things I'm stuck on:**
 - Known gap (scale, deferred): N dispatcher pollers race per tick → M5 (SKIP LOCKED).
 - Known gap: 30s max request origin unconfirmed — carried from M3.
-- Is Stage 4 done? k6 has landed. Remaining un-attacked candidates: the
-  transient-failed-items bug (above), the creation transaction (decided,
-  not built), 503 translation.
+- Is Stage 4 done? k6 landed 08-21; transient-failed-items closed 08-24 (F-13).
+  Remaining: the creation transaction (decided 08-18, not built) and 503 translation.
+  New since 08-24: the `21000` allowlist gap, which is Stage-4-shaped too.
 
 ---
 
@@ -186,7 +207,7 @@ CARRIED / DON'T FORGET:
 | 1 | Single Box | ✅ Done | 2026-04-27 | 2026-04-29 | — |
 | 2 | API Design | ✅ Done | 2026-05-01 | 2026-05-12 | — |
 | 3 | Caching | ✅ Done| 2026-05-12 | 2026-06-11 | — |
-| 4 | Horizontal Scale | 🟡 | 2026-06-11 | — | S3 ✅ closed 07-09; S4 🟡 in progress (guard branch proven 07-20, F-12; cold-start re-audit 08-18 clean, 3 new findings; k6 chunk run DONE 08-21 — 5000ms validated, chunk size 20 unchanged); S5/S6/S7 remain |
+| 4 | Horizontal Scale | 🟡 | 2026-06-11 | — | S3 ✅ closed 07-09; S4 🟡 in progress (guard branch proven 07-20, F-12; cold-start re-audit 08-18 clean, 3 new findings; k6 chunk run DONE 08-21 — 5000ms validated, chunk size 20 unchanged; transient-failed-items fixed 08-24, F-13); S5/S6/S7 remain |
 | 5 | Async Work | ⬜ | — | — | — |
 | 6 | Data: Replication, Sharding, Migrations | ⬜ | — | — | — |
 | 7 | Auth & Security | ⬜ | — | — | — |
@@ -241,7 +262,7 @@ CARRIED / DON'T FORGET:
 | 2026-06-30 | 4 | Failed-row error detail lives in a nullable `error TEXT` column on `bulk_job_items`, not derived elsewhere | the row is the complete per-item lifecycle record; status + error + url_id on one row makes results and resume the same indexed scan with no join | another nullable column whose meaning is only legible in combination with status — the client/result-builder must branch on status first, not on column nullity |
 | 2026-06-30 | 4 | Backfill `bulk_job_results` → `bulk_job_items` via expand-migrate-contract; defer the `DROP TABLE` to a later migration after API cutover, not the migration that creates the new table | during a rolling deploy both old and new code run simultaneously — dropping the old table immediately fails any in-flight request still on the old path. Keeping both tables until all readers/writers are migrated means no instance ever finds its expected table missing | a window where both tables coexist and the old one must be treated as frozen (no new writes), plus a second migration to remember later for the drop |
 | 2026-07-02 | 4 | Terminal job status (`completed`/`partial`/`failed`) is derived from a post-loop aggregate query over `bulk_job_items`, NOT from in-memory `successCount`/`failedCount` counters incremented during the loop | the job is resumable — a reaped worker inherits a job a dead worker already made progress on, and starts with its counters at zero in fresh RAM. Counters only ever reflect the *current* worker's slice, so a resumed worker would stamp `completed` over a job that actually has failures the dead worker recorded in the table. The table is the source of truth; RAM dies with the process | one extra aggregate query per job at the end; the verdict is only as correct as the committed row statuses (fine — that's exactly what durability bought us) |
-| 2026-07-02 | 4 | Keep BOTH a per-row-transaction worker (`processBatchInsertJob`) and a true-batch CTE worker (`processBatchInsertJobV2`); for `shortn`'s workload the per-row shape is the correct default | URL inserts fail *independently* (one bad URL is not the batch's shared fate), so a bulk/all-or-nothing statement condemns all N rows for one bad row AND collapses per-row error identity (every failed row gets the same error text). Per-row isolation is a *correctness* property already decided ("19 good, 1 fails"); batch buys *throughput* (fewer commits/fsync) which is unmeasurable at 60 URLs. Kept the batch version only as a learning artifact to feel the contrast | per-row pays N round trips per job (invisible at this scale, real at 10k+); maintaining two code paths that must not drift. Batch/bulk is the right tool only when the batch shares a single fate — not here |
+| 2026-07-02 | 4 | Keep BOTH a per-row-transaction worker (`processBatchInsertJob`) and a true-batch CTE worker (`processBatchInsertJobV2`); for `shortn`'s workload the per-row shape is the correct default | URL inserts fail *independently* (one bad URL is not the batch's shared fate), so a bulk/all-or-nothing statement condemns all N rows for one bad row AND collapses per-row error identity (every failed row gets the same error text). Per-row isolation is a *correctness* property already decided ("19 good, 1 fails"); batch buys *throughput* (fewer commits/fsync) which is unmeasurable at 60 URLs. Kept the batch version only as a learning artifact to feel the contrast. **AMENDED 2026-08-24 — this is no longer true: the CTE worker (`processBatchInsertJobV2`) is the default and has been since 07-03. See the 2026-08-24 row.** | per-row pays N round trips per job (invisible at this scale, real at 10k+); maintaining two code paths that must not drift. Batch/bulk is the right tool only when the batch shares a single fate — not here |
 | 2026-07-03 | 4 | Worker takes `jobId` ONLY and self-queries its work (`bulk_job_items WHERE job_id AND status='pending'`) as its first act, over trusting a caller-passed `urls` array | collapses fresh-start and resume into a SINGLE code path — the worker always asks the table "what's pending for this job?", getting all 60 on a fresh run and only the leftovers on a resume, so there is no "resume mode" to special-case and nothing to drift. The row status in the table is the single source of truth for "what's left"; an argument would be a second source that can disagree and cause reprocessing of already-committed rows (duplicate short codes). On the resume path there is no caller holding the urls anyway, so the query happens either way | one extra indexed SELECT on the fresh path where the caller already had the urls in hand — sub-ms against the partial index, dwarfed by the inserts that follow |
 | 2026-07-03 | 4 | Dispatcher DISCOVERS ONLY (plain `SELECT id FROM bulk_jobs WHERE status='pending'`, no UPDATE); the atomic claim lives PER-JOB inside the worker, over a dispatcher that claims all pending rows in one `UPDATE ... RETURNING id` | one UPDATE that claims all pending rows funnels the whole fleet's work onto whichever instance's dispatcher ticks first — the other two instances SELECT/UPDATE, find zero pending, and sit idle. Discovery-only + per-job claim means all 3 instances fire a worker per candidate id, the workers race the claim per job (one wins, two get rowCount=0 and bounce), and jobs spread naturally across the fleet. Dispatcher is allowed to over-select; the claim is the referee | dispatcher over-selects and fires workers that will lose the claim — cheap wasted UPDATEs, no correctness cost. Also fire workers WITHOUT await (with `.catch`) so a slow job doesn't starve the tick |
 | 2026-07-07 | 4 | `attempts` incremented inside the claim UPDATE (crash-proof counting); the attempt cap is enforced by the claim winner AFTER `RETURNING`, not as a filter in the claim's WHERE clause | putting `attempts < cap` in the claim WHERE means a row that has exhausted its attempts can never be claimed by ANY worker again — the condition is never satisfied, so no worker can lock the row to flip it to `failed`, and the job is stuck in a reap/redispatch loop forever. The check must live after the claim: the winner reads the returned `attempts`, and if the cap is exceeded it marks the job `failed` instead of processing. Incrementing in the claim UPDATE itself makes the count crash-proof — the attempt is recorded atomically with taking ownership, so a worker that dies mid-job has still burned its attempt | the claim UPDATE always succeeds even for exhausted jobs, so a worker is spent just to deliver the `failed` verdict — one extra claim/UPDATE cycle per dead job. A row's `attempts` can exceed the cap by one (the counting claim that discovers exhaustion), so the cap reads as "attempts allowed to start", not a hard ceiling on the stored value |
@@ -257,6 +278,8 @@ CARRIED / DON'T FORGET:
 | 2026-08-18 | 4 | Short codes are GLOBAL per URL — the same `original_url` always resolves to the same code, fleet-wide, forever (consequence of `ON CONFLICT (original_url) DO UPDATE`). Accepted deliberately rather than left as an accident | the clause was added as a third duplicate-net on retry (`DO UPDATE SET original_url = EXCLUDED.original_url` rather than `DO NOTHING`, so the conflicting row still lands in `RETURNING` and its item gets marked completed — `DO NOTHING` would leave that item `pending` forever). But its real effect is a product rule: two clients shortening the same destination share one row, one id, one code. Nobody decided that; it arrived as a side effect, and side-effect semantics get expensive once there's data | blocks per-user analytics on a shared destination (two users share the code, so they share its click stats), per-user custom codes, and per-user expiry. Also means "same URL twice in one batch" collapses to one row. Fine for `shortn` today; revisit before per-user links or analytics ownership (M5/M7) — changing it later means a new uniqueness model and a migration |
 | 2026-08-21 | 4 | Chunk size STAYS 20 and `query_timeout` STAYS 5000 — measured, not assumed. Max chunk CTE = 18ms at 24 concurrent jobs (2ms @6, 4ms @12) | closes the calibration question opened 07-20, where the 5000ms was flagged as an M1 single-row number being asked to cover a 20-row CTE. It covers it: ~277× margin at the worst observed chunk. Explicitly REJECTED the tempting inverse experiment ("find the biggest chunk that fits in 5000ms") — chunk size is a BLAST-RADIUS knob, not a throughput knob. One timeout stamps every URL in the chunk `failed`, so 20 costs 20 and 200 costs 200; round trips are invisible at this scale, so there is nothing to buy by sizing up, and a 4000ms chunk would sit one hiccup from a cliff | the number is laptop-scale: Docker, unloaded PG, 60-URL jobs, and the measured curve is NON-LINEAR (2 → 4 → 18 for 2× steps), so headroom past 24 concurrent jobs is unknown. Also: the 18ms spike is attributed to creation-write backlog by inference, not proof. Re-run the ladder if volume, job size, or DB hardware changes |
 | 2026-08-21 | 4 | The `AND status = 'pending'` predicate on the inner catch's recovery write is KEPT and documented as load-bearing, not tidied away | it was written to mean "don't stomp an existing error." Its real value is bigger: `query_timeout` is a CLIENT-side timer, so Node can throw and stamp 20 items `failed` while the abandoned CTE is still committing in PG. The predicate makes both orderings safe — CTE-commits-first means the predicate no longer matches; catch-arrives-first means it BLOCKS on the CTE's row locks and PG re-checks it against the winner's committed row (EvalPlanQual), so rowCount=0 either way. Without it, a completed chunk could be overwritten to `failed` with live short codes sitting in `urls` | it reads as redundant ("we already know they're pending"), so it is exactly the kind of clause a future refactor deletes. Costs nothing; the only price is that its importance is invisible from the code and lives here instead |
+| 2026-08-24 | 4 | `processBatchInsertJobV2` (chunked CTE) is `shortn`'s DEFAULT worker — AMENDS 2026-07-02, which named the per-row worker the default and the CTE "a learning artifact" | notes-vs-code drift found while fixing F-13: everything built since 07-03 — the atomic claim, reaper, dispatcher, the 07-20 guard, the 08-21 k6 ladder — was built and proven against the CTE path. The per-row worker has none of that behind it. Re-pointing the dispatcher now would invalidate seven weeks of proof to buy per-row error identity on a failure class that fires roughly never today. Throughput is NOT the reason — round trips are invisible at 60 URLs (07-02 said so and 08-21 measured it) | per-row error identity is gone: a `23xxx` chunk condemns all 20 items with one identical error, 19 of them healthy. The client cannot tell which URL was bad and must resubmit all 20 (cheap — `ON CONFLICT` absorbs the 19). REVISIT when per-user custom codes or per-user expiry land (M7): each new constraint multiplies the ways Postgres can reject a single row, which makes the collapsed identity expensive instead of theoretical |
+| 2026-08-24 | 4 | Chunk failures are CLASSIFIED, not uniformly stamped: `23xxx` → permanent (stamp items `failed`, guard the write, `continue`); everything else, including no-code errors → transient (touch nothing, rethrow to the outer catch's existing retry path) | F-13: an exception is evidence about the statement, not about the rows. Only the integrity-violation class (`23xxx`) is Postgres saying "I looked at this row and rejected it"; `57xxx`/`08xxx`/no-code are the plumbing. A transient blip must leave items `pending` so the resume self-query (07-03) finds them without being told. Chose an ALLOWLIST (`23xxx` = permanent) over a denylist because the wrong guess is asymmetric: misclassifying transient-as-permanent kills healthy URLs forever; misclassifying permanent-as-transient costs at most 3 wasted attempts and still reaches a truthful verdict from the items aggregate. Waste heals, corruption doesn't — same rule as the 07-20 zombie decision | an allowlist is wrong BY OMISSION: any permanent error outside `23xxx` burns the full attempt cap for nothing. Known gap already: `21000` (see carried). Also, a transient blip now costs one attempt out of 3 — accepted, since 3 transient failures across 3 attempts is an outage, not a blip, and refusing to spin forever is what the cap is for |
 
 ---
 
@@ -376,6 +399,57 @@ CARRIED / DON'T FORGET:
 - **Root cause in one sentence:** we relied on the dispatcher's try/catch to catch an error born inside the writer — but try/catch only catches synchronous code in its block, and since we never awaited `processBatchInsertJobV2`, the try block finished before the error even existed; the rejection could only travel through the promise's `.catch`, and it arrived carrying the recovery write's error with the original cause already overwritten.
 - **Fix:** guard moved into the worker's own outer catch — the only scope where original error and write error coexist. Ordering is the guard: log the original error FIRST, then attempt the recovery write inside a nested try/catch that logs "reaper will handle" and swallows. Dispatcher's dead try/catch deleted; `.catch` on the fired promise kept as a generic last-resort net. Proven with a real kill: PG dead AT the moment the catch ran (CHUNK_SLEEP window, PG restarted only after the guard's log line appeared) → both log lines in order → reaper flipped the parked row → job completed, 60/60, 0 duplicates.
 - **What I'd watch for in production:** a log line that has never once appeared in months of operation next to a failure path it claims to cover — grep your "impossible" branches periodically; a guard with zero executions is unproven, not reliable. Also: any error log whose message is a write/cleanup failure with no preceding line for the original failure — that's a witness being replaced.
+
+### F-13: Transient chunk failure stamped 20 healthy URLs permanently `failed`
+- **Module/Stage:** M4 S4
+- **What I did:** built `FORCE_CHUNK_ERROR=before|after` (dev-gated, chunk 0, attempt 1
+  only) to throw inside the chunk `try` on demand — removing the timing dependency that
+  made this bug untestable. `before` throws with the rows still `pending`; `after` throws
+  with the CTE already committed. Reproducing the EFFECT beat reproducing the CAUSE: a
+  synthetic throw also models the COMMON transient case (socket reset, `query_timeout`
+  trip, failover) better than a `docker kill` does, since in all of those PG is alive
+  again milliseconds later.
+- **What broke:** `before` run: 20 items stamped `failed`, 40 `completed`, job `partial`,
+  `attempts=1`, `error=NULL`, and ZERO short codes minted for the 20 — they were never
+  sent to Postgres at all. Nothing crashed, nothing retried, no reap. The job looks like a
+  clean run that found 20 bad URLs. A client polls, sees `partial` + 20 error strings, and
+  concludes those URLs are bad. They aren't. Nothing ever moves an item from `failed` back
+  to `pending`, and the resume query only selects `pending` — so they are dead for good.
+- **Root cause in one sentence:** the inner catch wrote a verdict about the DATA using
+  evidence about the PLUMBING — an exception says the statement didn't complete, not that
+  the rows in it were bad, so stamping `failed` converted "we don't know" into "these are
+  permanently bad." Same disease as F-11 and the 07-02 RAM counters one layer over: a
+  verdict assumed from the code path instead of derived from evidence.
+- **Previously "correct" only by timing:** if PG was still dead when the catch ran, the
+  recovery write ALSO threw, escaped to the outer catch, and the job retried and healed.
+  If PG came back a moment earlier, the write landed and 20 healthy URLs died. Same blip,
+  opposite outcomes, decided by milliseconds.
+- **Fix:** classify on `err.code` at the catch.
+  - `23xxx` (integrity constraint) → PERMANENT: stamp the 20 `failed` (keeping the
+    load-bearing `AND status='pending'` predicate), guard the write in a nested
+    try/catch, `continue` the loop. Job carries on and reaches a real verdict.
+  - everything else — `57xxx` admin_shutdown, `08xxx` connection, `ENOTFOUND`, and
+    `query_timeout` trips (which carry NO code at all) → TRANSIENT: touch nothing,
+    RETHROW. The outer catch is already the retry path (07-07): writes the job error,
+    checks the cap, sets `pending`, dispatcher re-claims in ~2s, worker self-queries and
+    finds the 20 still `pending`. No new machinery; the inner catch had been swallowing
+    errors that belonged to the outer one.
+  - `42601` (syntax error) deliberately NOT treated as permanent — that's a bug in my SQL,
+    not a bad row; let it blow up the job and land in the logs.
+- **Proven both ways (2026-08-24):** permanent (synthetic `DatabaseError`, code `23123`) →
+  20 `failed` / 40 `completed`, `attempts=1`, chunks 20 and 40 ran, no retry cycle.
+  Transient (`docker stop postgres` mid-job) → `ENOTFOUND`, nothing stamped, rethrown,
+  outer catch's recovery write ALSO failed → 07-20 guard fired ("reaper will handle") →
+  reaper flipped the parked row → retry completed 60/60. Note this exercised the SLOW lane
+  (~60s reaper), not the ~2s dispatcher path.
+- **What I'd watch for in production:** this failure has no server-side symptom — no
+  error log, no retry, no reap, `attempts=1`. The only tell is on the client side:
+  RESUBMISSION SUCCESS RATE. If a URL that came back `failed` succeeds on a plain
+  resubmit with no change to the payload, the original verdict was a lie. Alert on
+  `bulk_job_items` rows whose `error` text is identical across an entire chunk boundary
+  (20 rows, same message, contiguous) — a real constraint violation is one bad row, so
+  20 identical errors means the batch shape collapsed the identity. Also: any `failed`
+  item with no corresponding `urls` row AND an error that isn't a `23xxx` message.
 
 ---
 
@@ -525,4 +599,4 @@ CARRIED / DON'T FORGET:
 | 2026-07-09 | Xh | M4 S3 ✅ CLOSED | Recovery-write guard + logger format ([job id] prefix, attempt in outer catch); root-caused app-dies-with-PG to process.exit(-1) in pool.on('error') — removed, self-heal chain now survives DB death; kill test: containers survived, attempt 1 failed (ENOTFOUND), attempt 2 completed | guard catch-branch never exercised; 503 translation; death-path error-clearing; Stage 4; k6 chunk size |
 | 2026-07-20 | Xh | M4 S4 🟡 | Stage 4 first blood: discovered the 07-09 guard was DEAD CODE (sync try/catch around un-awaited promise in dispatcher — F-12); rebuilt guard in worker's catch w/ log-before-write ordering; EXECUTED the guard branch for the first time with a real dead-DB kill → witness preserved, reaper flipped, dispatcher re-claimed, 60/60, attempts=2, 0 dups, error=NULL (policy, not luck); derived worst-case resume = 60s reaper + 2s dispatcher stacked; F-12 root cause articulated & logged. Then: claim-then-die gap cleared by design review (claim = first heartbeat, 3× margin protects slow starters); zombie-worker analysis (heartbeat = liveness ≠ progress) → Option B (bound the operation) over progress-reaper (false-positive asymmetry: waste vs two-owner corruption) → found query_timeout:5000 already covers it; k6 chunk run promoted to load-bearing (validates the 5000ms) | RUNNING the k6 chunk-size calibration; deciding if S4 is done (503 translation? death-path error-clearing?); fencing-tokens side-read (Option A = the anchor) |
 | 2026-08-18 | ~2h | M4 S4 🟡 | COLD START after a 28-day gap — read the worker line by line against the notes instead of trusting either. Audit clean (guard in worker's catch, dispatcher's dead try/catch gone, query_timeout:5000 present). 3 new findings: (1) ORPHAN JOB — unwrapped two-write creation can leave a `pending` job with zero items that the DISPATCHER picks up (not the reaper) and the 0/0/0 aggregate reports as `completed`; fix = transaction, explicitly NOT a verdict-function guard (would be an unprovable branch = F-12 disease). (2) INNER CATCH mislabels a transient DB blip as permanent item `failed` and nothing ever un-fails them — today it self-corrects only because the second write also fails, i.e. correctness by timing. (3) `ON CONFLICT (original_url)` silently made short codes global-per-URL — a product rule nobody decided. 3 D-log rows written (2 decided, 1 decided-not-built). Designed the k6 chunk measurement: time it in NODE (pool-wait is inside the timeout's clock; pg_stat_statements has no percentiles and can't see it), sweep concurrent WORKERS not RPS, chunk size is the knob rather than raising the timeout | ACTUALLY RUNNING k6 (blocked on: no way to create N concurrent jobs on demand); building the creation transaction; the transient-failed-items bug; 503 translation; fencing-tokens side-read |
-| 2026-08-21 | ~3h | M4 S4 🟡 | RAN THE K6 CHUNK LADDER — the blocker from 08-18 is gone and Stage 4's main event is closed. Solved "N concurrent jobs on demand" with k6 `per-vu-iterations` (vus=N, iterations=1) as a starting gun rather than an RPS load test; per-VU unique URLs so jobs don't collide on `ON CONFLICT`. Made the instrumentation permanent: `t0` outside the chunk try, JSON `chunk_ok`/`chunk_fail` lines with duration on BOTH paths (caught a copy-paste where the catch logged `chunk_ok` — a mislabelled line in a failure path that had never run, F-12's cousin). Results 6/12/24 → max 2/4/18ms vs a 5000ms timeout; kept chunk size 20 and the timeout unchanged, and logged WHY sizing up is the wrong search (blast radius, not throughput). Learned the harness lesson the hard way: 6 and 12 jobs produced only ~2 concurrent chunks because a Node instance can only send one query at a time and spends most of its life not-querying — the apps couldn't feed PG hard enough to make it struggle. Traced the 18ms spike to two DIFFERENT instances slowing simultaneously → cause must be the shared thing (PG), attributed to ~1,440 creation-write inserts from the burst. Corrected the 08-18 note claiming `query_timeout` includes pool-wait (it doesn't — the timer arms after `pool.connect` returns). Noticed the inner catch's `status='pending'` predicate is load-bearing against the abandoned-CTE race. 2 D-log rows | the transient-failed-items bug (still un-attacked, now the leading Stage-4 candidate); building the creation transaction; proving rather than inferring the creation-write backlog; the unexplained 08-19 missing-chunk-40 / 37s-gap anomaly; 503 translation; fencing-tokens side-read |
+| 2026-08-21 | ~3h | M4 S4 🟡 | RAN THE K6 CHUNK LADDER — the blocker from 08-18 is gone and Stage 4's main event is closed. Solved "N concurrent jobs on demand" with k6 `per-vu-iterations` (vus=N, iterations=1) as a starting gun rather than an RPS load test; per-VU unique URLs so jobs don't collide on `ON CONFLICT`. Made the instrumentation permanent: `t0` outside the chunk try, JSON `chunk_ok`/`chunk_fail` lines with duration on BOTH paths (caught a copy-paste where the catch logged `chunk_ok` — a mislabelled line in a failure path that had never run, F-12's cousin). Results 6/12/24 → max 2/4/18ms vs a 5000ms timeout; kept chunk size 20 and the timeout unchanged, and logged WHY sizing up is the wrong search (blast radius, not throughput). Learned the harness lesson the hard way: 6 and 12 jobs produced only ~2 concurrent chunks because a Node instance can only send one query at a time and spends most of its life not-querying — the apps couldn't feed PG hard enough to make it struggle. Traced the 18ms spike to two DIFFERENT instances slowing simultaneously → cause must be the shared thing (PG), attributed to ~1,440 creation-write inserts from the burst. Corrected the 08-18 note claiming `query_timeout` includes pool-wait (it doesn't — the timer arms after `pool.connect` returns). Noticed the inner catch's `status='pending'` predicate is load-bearing against the abandoned-CTE race. 2 D-log rows | the transient-failed-items bug (still un-attacked, now the leading Stage-4 candidate); building the creation transaction; proving rather than inferring the creation-write backlog; the unexplained 08-19 missing-chunk-40 / 37s-gap anomaly; 503 translation; fencing-tokens side-read || 2026-08-24 | ~2h | M4 S4 🟡 | FIXED the transient-failed-items bug (F-13), the leading Stage-4 candidate since 08-18. Killed the timing dependency first: built `FORCE_CHUNK_ERROR=before\|after` (dev-gated, chunk 0, attempt 1) so the branch fires deterministically instead of requiring PG to die and revive inside a millisecond window — reproducing the EFFECT beat reproducing the CAUSE, and the synthetic throw turned out to model the common case (socket reset, timeout trip, failover) better than a docker kill did. `before` run: 20 healthy URLs stamped `failed`, no short codes ever minted, job `partial`, `attempts=1`, `error=NULL` — a job that looks perfectly healthy and lies. `after` run: `chunk_failed` logged at 4ms and 60/60 completed — which RETIRES the 08-21 "load-bearing predicate" claim from reasoned to PROVEN. Fix = classify on `err.code`, permanent swallows and continues, transient rethrows into the outer catch that was already the retry path. Verified both branches + a real `docker stop postgres` (exercised the SLOW lane: outer guard fired, reaper flipped the row, retry completed 60/60). Found `21000` as the allowlist's known omission. Amended 07-02: the CTE worker is the default, and had been for 7 weeks without a decision | building the creation transaction (decided 08-18, STILL not built); 503 translation; the real `23505` receipt; the `21000` gap; proving rather than inferring the 08-21 creation-write backlog; the unexplained 08-19 missing-chunk-40 anomaly; fencing-tokens side-read |
