@@ -455,15 +455,21 @@ export async function createBatchInsertJobV2(
   webhookUrl?: string,
 ): Promise<string> {
   const result = await pool.query(
-    `INSERT INTO bulk_jobs (status,webhook_url) VALUES ($1, $2) RETURNING id`,
-    ["pending", webhookUrl || null],
+    `
+    WITH new_job AS (
+      INSERT INTO bulk_jobs (status, webhook_url) 
+      VALUES ('pending', $1)
+      RETURNING id
+    )
+    INSERT INTO bulk_job_items (job_id, url)
+    SELECT new_job.id, unnest($2::text[])
+    FROM new_job
+    RETURNING bulk_job_items.job_id
+    `,
+    [webhookUrl || null, urls],
   );
-  await pool.query(
-    `INSERT INTO bulk_job_items (job_id, url) 
-    SELECT $1, unnest($2::text[])`,
-    [result.rows[0].id, urls],
-  );
-  return result.rows[0].id;
+
+  return result.rows[0].job_id;
 }
 
 async function bumpUpdatedAt(jobId: string): Promise<void> {
@@ -575,14 +581,16 @@ export async function processBatchInsertJobV2(
         await pool.query(
           `WITH inserted AS (
           INSERT INTO urls (code, original_url)
-          SELECT unnest($1::text[]), unnest($2::text[])
+          SELECT DISTINCT ON (u.url) u.code, u.url
+          FROM unnest($1::text[], $2::text[]) AS u(code, url)
+          ORDER BY u.url
           ON CONFLICT (original_url) DO UPDATE SET original_url = EXCLUDED.original_url
           RETURNING id, original_url
-        )
-        UPDATE bulk_job_items bjt
-        SET url_id = inserted.id, status = 'completed'
-        FROM inserted
-        WHERE bjt.url = inserted.original_url AND bjt.job_id = $3
+      )
+          UPDATE bulk_job_items bjt
+          SET url_id = inserted.id, status = 'completed'
+          FROM inserted
+          WHERE bjt.url = inserted.original_url AND bjt.job_id = $3
       `,
           [batch.map(() => randomBytes(6).toString("hex")), batch, jobId],
         );
@@ -618,7 +626,8 @@ export async function processBatchInsertJobV2(
             ? error.code
             : "UNKNOWN_ERROR";
 
-        const permanentErrors = errorCode?.startsWith("23");
+        const permanentErrors =
+          errorCode?.startsWith("23") || errorCode === "21000"; //  Unique violation or other permanent errors
 
         logger(
           JSON.stringify({
