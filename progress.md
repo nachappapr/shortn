@@ -1,6 +1,18 @@
 ## Current Position
-Current Position: Module 4, Stage 4 — CLOSED 2026-08-27, pending the S4 lesson articulation.
-  Session 08-27 paid the last receipt and did cleanup:
+Current Position: Module 4, Stage 5 — STARTED 2026-08-27 (Fargate path). Stage 4 CLOSED
+  2026-08-27, lesson articulated (see S4 LESSON below).
+  Session 08-27, second half — S5 start: chose ECS on Fargate over an EC2 ASG (D-logged);
+  built the image for amd64 and pushed `shortn:m4` to ECR in the PROD account (via an
+  assumed-role profile, `--profile prod`). Nothing billable is running — no cluster, no
+  ALB, no RDS/Redis. Network from M3 (VPC, IGW, route tables, 2 public subnets in 2 AZs)
+  still exists in prod and will be reused.
+  S4 LESSON (own words): in Stage 3 the failure branches were never actually covered —
+  they were assumed, and a green test made it look like they had run. Stage 4 was going
+  INTO each branch, forcing it to execute on purpose, and checking whether the decision
+  inside it was right. F-12, F-13 and the orphan job were all "correct by timing": the
+  outage's timing steered execution around the wrong branch, so the test passed for a
+  reason that had nothing to do with the code being correct.
+  Session 08-27, first half — paid the last S4 receipt and did cleanup:
   (1) CARDINALITY RECEIPT PAID. Validator relaxed, POST `[]` → TypeError on `rows[0]`
   (the expected symptom — it fires with OR without the predicate, so it proves nothing),
   `bulk_jobs` row count UNCHANGED before/after — that count is the actual receipt.
@@ -21,15 +33,49 @@ Current Position: Module 4, Stage 4 — CLOSED 2026-08-27, pending the S4 lesson
   Prior sessions: 08-26 creation CTE + `21000` dedupe + real `23514` receipt; 08-24 F-13
   classifier; 08-21 k6 chunk ladder (5000ms validated, chunk 20).
 Module: Module 4
-Stage: 4 ✅ (closing) → 5 next
+Stage: 5 (AWS-native: ALB + ECS Fargate) 🟡
 Last session: 2026-08-27
-Next action: (a) articulate the Stage 4 lesson in own words — what "break the fix" found
-  that Stage 3's tests didn't (F-12, F-13, orphan job: all correct-by-timing). (b) Decide
-  503 translation: S5 or a 30-minute pre-S5 item — judgement call flagged 08-26, do not
-  let it drift again. (c) Start M4 S5: ALB + ASG-vs-Fargate decision.
+Next action: FIRST answer the open question: is RDS / Redis still running in the prod
+  account, or torn down after M3? (Decides whether S5 starts with re-provisioning them.)
+  Then, in order: (1) three security groups CHAINED BY SG, NOT CIDR — ALB SG allows 80
+  from 0.0.0.0/0; tasks SG allows 3000 from the ALB SG only; RDS/Redis SG allows
+  5432/6379 from the tasks SG only (task IPs change on every restart, so an IP rule rots).
+  (2) ECS cluster + task definition: image `<prod-acct>.dkr.ecr.ap-south-1.amazonaws.com/
+  shortn:m4`, `runtimePlatform.cpuArchitecture = X86_64`, env for PG/Redis, CPU/mem.
+  (3) ECS service, desired count 3. (4) ALB + target group + listener; the service
+  registers tasks into the target group. Then the S5 lessons proper: health check pulling
+  a bad task out, connection draining on a deploy (tag `m4` vs a second tag), cross-AZ.
+  503 translation is a FIRM S5 ITEM (decided 08-27, deferred once more) — do it before
+  the ALB health-check exercise, since a healthy app answering 500 on DB-down is exactly
+  what the health check will have to reason about.
   Still carried, not blocking: `bulk_job_items.url NOT NULL` migration; the
   `chunkItems.length` vs insert-count logging audit; creation-write backlog proof;
   08-19 anomaly; fencing-tokens side-read.
+
+Verified this session (2026-08-27) — S5 start, the image story:
+  - DOCKER IMAGES ARE PER-CPU, NOT PLATFORM-INDEPENDENT. The Mac build was `arm64`;
+    Fargate defaults to `X86_64` and would have cycled the task with `exec format error`.
+    Options: rebuild for amd64, or set `runtimePlatform` ARM64 (Graviton, ~20% cheaper).
+    Chose amd64 so the target does not depend on whose laptop built it. First put
+    `FROM --platform=linux/amd64`; BuildKit lints that (`FromPlatformFlagConstDisallowed`
+    — a constant there kills any future multi-arch build). Cleaner pin: `--platform` on
+    the build command, committed as a `package.json` script. (Carried.) The real fix is
+    building in one place — CI → ECR — filed for M9.
+  - THE amd64 BUILD FAILED WHERE arm64 HAD PASSED — same `package.json`, same Dockerfile.
+    `reused 0, downloaded 111`: the arm64 build had been REUSING A CACHED LAYER from
+    months ago; the amd64 build had no cache and ran `pnpm install` for real, with
+    today's pnpm. Two stacked changes surfaced: pnpm 10 refuses to run a dependency's
+    install script (esbuild's) unless allowlisted — `ERR_PNPM_IGNORED_BUILDS` — a
+    supply-chain default; and the image had pnpm 11 (unpinned `npm install -g pnpm`),
+    which no longer reads the `"pnpm"` block in `package.json` (moved to
+    `pnpm-workspace.yaml`). Fix: pin `pnpm@10.32.0` (matches the Mac) + allowlist esbuild.
+    SAME LESSON AS STAGE 4: a cache is a test that passes for a reason you didn't check.
+  - ECR PUSH shows 3 rows for one tag: the `m4` Image Index (table of contents → the
+    amd64 image), the untagged 84 MB image itself, and a 0 MB provenance attestation from
+    BuildKit. Normal; nothing to clean up. `--provenance=false` drops the receipt if wanted.
+  - ECR login = `get-login-password` (12h token from the assumed-role session) piped into
+    `docker login` (username is literally `AWS`). The token's account must match the
+    registry address's account id or the push fails with a misleading "not found".
 
 ### K6 CHUNK RUN — RESULT (ran 2026-08-21)
 
@@ -193,6 +239,15 @@ CARRIED / DON'T FORGET:
   Related to the M5 SKIP LOCKED gap.
 - 503-vs-500 translation for DB-down errors deferred (one branch in the
   error middleware: 57P01/ECONNREFUSED/ENOTFOUND → 503 + Retry-After).
+  **DEFERRED AGAIN 2026-08-27 → firm S5 item, do before the ALB health-check exercise.**
+- NEW (08-27): pin the image platform in a committed build script
+  (`"docker:build": "docker buildx build --platform linux/amd64 ..."`) instead of a
+  constant `FROM --platform`, which BuildKit lints and which blocks multi-arch later.
+- NEW (08-27, filed for M9): build images in CI (CodeBuild or GitHub Actions → ECR) so
+  the artifact never depends on which laptop ran `docker build`.
+- NEW (08-27): `npm install -g pnpm` unpinned in the Dockerfile handed the image pnpm 11
+  while the Mac runs 10.32 — now pinned `pnpm@10.32.0`. Same class as the platform bug:
+  a build input that silently depends on WHEN it ran.
 - ~~Death-path partial/completed arm does NOT clear `error`~~ — DECIDED
   2026-08-18, keep it. D-logged.
 - bulk_job_results DROP TABLE — separate later migration AFTER API cutover.
@@ -240,7 +295,8 @@ CARRIED / DON'T FORGET:
 - Known gap: 30s max request origin unconfirmed — carried from M3.
 - ~~Is Stage 4 done?~~ Stage 4 DONE 2026-08-27 — cardinality receipt paid, cleanup done.
   Lesson articulation pending (see Next action).
-- 503 translation: FILED AS STAGE 5 on 08-26 — but flag this as a judgement call, because
+- 503 translation: **DECIDED 2026-08-27 — S5 item, before the ALB health-check work.**
+  History: FILED AS STAGE 5 on 08-26 — but flag this as a judgement call, because
   it is not obviously AWS-native work either. It is one branch in the error middleware
   (`57P01` / `ECONNREFUSED` / `ENOTFOUND` → 503 + `Retry-After`), and it is the SAME SHAPE
   as the F-13 classifier: read `err.code`, decide whether the failure is about the request
@@ -258,7 +314,7 @@ CARRIED / DON'T FORGET:
 | 1 | Single Box | ✅ Done | 2026-04-27 | 2026-04-29 | — |
 | 2 | API Design | ✅ Done | 2026-05-01 | 2026-05-12 | — |
 | 3 | Caching | ✅ Done| 2026-05-12 | 2026-06-11 | — |
-| 4 | Horizontal Scale | 🟡 | 2026-06-11 | — | S3 ✅ closed 07-09; S4 🟡 in progress (guard branch proven 07-20, F-12; cold-start re-audit 08-18 clean, 3 new findings; k6 chunk run DONE 08-21 — 5000ms validated, chunk size 20 unchanged; transient-failed-items fixed 08-24, F-13; creation CTE built + `21000` closed by dedupe + real `23514` receipt 08-26; cardinality receipt paid + cleanup + notes-vs-code drift resolved 08-27, S4 ✅); S5/S6/S7 remain |
+| 4 | Horizontal Scale | 🟡 | 2026-06-11 | — | S3 ✅ closed 07-09; S4 🟡 in progress (guard branch proven 07-20, F-12; cold-start re-audit 08-18 clean, 3 new findings; k6 chunk run DONE 08-21 — 5000ms validated, chunk size 20 unchanged; transient-failed-items fixed 08-24, F-13; creation CTE built + `21000` closed by dedupe + real `23514` receipt 08-26; cardinality receipt paid + cleanup + notes-vs-code drift resolved 08-27, S4 ✅); S5 🟡 started 08-27 (Fargate chosen, amd64 image pushed to ECR in prod; nothing billable running); S6/S7 remain |
 | 5 | Async Work | ⬜ | — | — | — |
 | 6 | Data: Replication, Sharding, Migrations | ⬜ | — | — | — |
 | 7 | Auth & Security | ⬜ | — | — | — |
@@ -334,6 +390,7 @@ CARRIED / DON'T FORGET:
 | 2026-08-26 | 4 | Job creation is ONE STATEMENT (a data-modifying CTE: `INSERT INTO bulk_jobs ... RETURNING id` feeding `INSERT INTO bulk_job_items ... SELECT`), NOT a pinned client with BEGIN/COMMIT — AMENDS 2026-08-18 | the 08-18 row accepted walking back the 07-07 "no pinned client, `pool.query` everywhere" simplification as the price of atomicity. It isn't the price. EVERY statement in Postgres already runs inside its own implicit transaction — if any part of it throws, everything it did rolls back, no `BEGIN` required. Collapsing the two writes into one statement therefore buys the same guarantee for free, and buys a STRONGER one: with two statements the process can die BETWEEN them, and no transaction protects against a process that never reaches COMMIT; with one statement there is no "between" to die in. The job id, previously read in Node between the two inserts, comes back from the final `RETURNING bulk_job_items.job_id` — the controller still has what it needs for the 202 | the id is now generated and consumed inside Postgres, so Node cannot see it before the items land — fine here, but any future step that needs the id BETWEEN the two writes would force a real transaction back. Also the statement is denser to read than two obvious inserts, and its atomicity is implicit (a reader has to know the implicit-transaction rule to see it); this row is where that knowledge lives |
 | 2026-08-26 | 4 | `WHERE cardinality($2::text[]) > 0` on the job insert is KEPT even though the request validator already rejects an empty array — and this is NOT the F-12 disease | first, they are different rules wearing one hat: the validator enforces a PRODUCT rule ("a client who sends `[]` gets a 400 with a useful message") and covers only callers arriving through the HTTP route; the predicate enforces a STRUCTURAL INVARIANT ("a `bulk_jobs` row without items must not exist") and binds every writer of that table — retry paths, backfills, a `psql` session at 11pm. Second, and the reusable rule: **a dead HANDLER is F-12; a dead CONSTRAINT is not.** The rejected 08-18 zero-item guard in `getFinalCompletionStatus` would only run once corruption already existed — it observes a bad state and relabels it, so it cannot be tested and it rots. The predicate never reacts to anything; it is a condition on the write that makes the bad state unrepresentable, and it is EVALUATED ON EVERY INSERT FOREVER — always true, never dead. Same category as `job_id NOT NULL`, which nobody calls dead code. The test is: does it run only in the bad case, or on every write? | without the predicate the failure mode is silent and legal, not an error: with an empty array the statement SUCCEEDS, `bulk_jobs` gets its row, `bulk_job_items` gets none, PG has nothing to roll back, Node throws a TypeError on `rows[0]`, the controller 500s — and the committed `pending` orphan is picked up by the dispatcher ~2s later and reported `completed`. The 08-18 bug, re-entering through a legal statement rather than a throw. Atomicity does not cover this; only the predicate does |
 | 2026-08-26 | 4 | `21000` closed by DEDUPING WITHIN THE CHUNK (`SELECT DISTINCT ON (u.url) u.code, u.url FROM unnest($1::text[], $2::text[]) AS u(code, url)`), over (a) deduping at creation or (b) adding `21000` to the permanent allowlist | (b) is wrong because it makes the client pay for a legal request: a batch listing one destination twice is not a malformed batch, and under the CTE worker a permanent stamp condemns all 20 items in the chunk, 19 of them healthy, to buy nothing. (a) is wrong because the client sends 60 URLs and gets 59 results — the response shape stops matching the request shape and the client must diff their input against the output to work out what happened. (c), chunk-time, preserves 60-in/60-out AND makes the batch path agree with the rule 08-18 already committed to: same URL, same row, same code. One insert, both item rows stamped `completed` by the url-based join, both carrying the same `url_id` — which is correct, they ARE the same destination. Best property: the classifier is untouched, because the error can no longer be RAISED. Removing the condition beats extending the allowlist | the url-based join (`WHERE bjt.url = inserted.original_url AND bjt.job_id = $3`) is now LOAD-BEARING rather than incidental — it is what makes both duplicate item rows resolve from one inserted row, and it also means a chunk can stamp item rows belonging to a LATER chunk when a duplicate spans chunk boundaries (harmless, idempotent, but true). Same shape as the 08-21 `AND status='pending'` predicate: it reads as ordinary SQL and its importance lives here, not in the code. Also: multi-argument `unnest` is what makes this safe — pairing the code and url arrays INSIDE Postgres means there is no moment where two independently-mutable JS arrays can desynchronise and mint codes against the wrong destinations |
+| 2026-08-27 | 4 | S5 runs on ECS FARGATE, not an EC2 Auto Scaling Group | `shortn` already ships as a container (M4 S0), so the VM under it would be pure overhead I'd be patching and sizing for nothing — Fargate deletes that layer; hand AWS the image + a task definition and it runs. Honest note: I have not used Fargate before, so the "why" is reasoning, not experience. "Learn both" was rejected: it doubles the bill and the teardown list; the ASG comparison becomes a 15-minute Stage 6 cost read instead | pricier per task-hour than the equivalent EC2, and I lose the box — no SSH, no `top`, no `pg_stat_activity` from the host; debugging is logs-only. Also forced the first S5 lesson early: images are per-CPU (arm64 Mac vs X86_64 Fargate default), so the build target has to be pinned in the repo |
 
 ---
 
@@ -658,4 +715,4 @@ CARRIED / DON'T FORGET:
 | 2026-08-21 | ~3h | M4 S4 🟡 | RAN THE K6 CHUNK LADDER — the blocker from 08-18 is gone and Stage 4's main event is closed. Solved "N concurrent jobs on demand" with k6 `per-vu-iterations` (vus=N, iterations=1) as a starting gun rather than an RPS load test; per-VU unique URLs so jobs don't collide on `ON CONFLICT`. Made the instrumentation permanent: `t0` outside the chunk try, JSON `chunk_ok`/`chunk_fail` lines with duration on BOTH paths (caught a copy-paste where the catch logged `chunk_ok` — a mislabelled line in a failure path that had never run, F-12's cousin). Results 6/12/24 → max 2/4/18ms vs a 5000ms timeout; kept chunk size 20 and the timeout unchanged, and logged WHY sizing up is the wrong search (blast radius, not throughput). Learned the harness lesson the hard way: 6 and 12 jobs produced only ~2 concurrent chunks because a Node instance can only send one query at a time and spends most of its life not-querying — the apps couldn't feed PG hard enough to make it struggle. Traced the 18ms spike to two DIFFERENT instances slowing simultaneously → cause must be the shared thing (PG), attributed to ~1,440 creation-write inserts from the burst. Corrected the 08-18 note claiming `query_timeout` includes pool-wait (it doesn't — the timer arms after `pool.connect` returns). Noticed the inner catch's `status='pending'` predicate is load-bearing against the abandoned-CTE race. 2 D-log rows | the transient-failed-items bug (still un-attacked, now the leading Stage-4 candidate); building the creation transaction; proving rather than inferring the creation-write backlog; the unexplained 08-19 missing-chunk-40 / 37s-gap anomaly; 503 translation; fencing-tokens side-read |
 | 2026-08-24 | ~2h | M4 S4 🟡 | FIXED the transient-failed-items bug (F-13), the leading Stage-4 candidate since 08-18. Killed the timing dependency first: built `FORCE_CHUNK_ERROR=before\|after` (dev-gated, chunk 0, attempt 1) so the branch fires deterministically instead of requiring PG to die and revive inside a millisecond window — reproducing the EFFECT beat reproducing the CAUSE, and the synthetic throw turned out to model the common case (socket reset, timeout trip, failover) better than a docker kill did. `before` run: 20 healthy URLs stamped `failed`, no short codes ever minted, job `partial`, `attempts=1`, `error=NULL` — a job that looks perfectly healthy and lies. `after` run: `chunk_failed` logged at 4ms and 60/60 completed — which RETIRES the 08-21 "load-bearing predicate" claim from reasoned to PROVEN. Fix = classify on `err.code`, permanent swallows and continues, transient rethrows into the outer catch that was already the retry path. Verified both branches + a real `docker stop postgres` (exercised the SLOW lane: outer guard fired, reaper flipped the row, retry completed 60/60). Found `21000` as the allowlist's known omission. Amended 07-02: the CTE worker is the default, and had been for 7 weeks without a decision | building the creation transaction (decided 08-18, STILL not built); 503 translation; the real `23505` receipt; the `21000` gap; proving rather than inferring the 08-21 creation-write backlog; the unexplained 08-19 missing-chunk-40 anomaly; fencing-tokens side-read |
 | 2026-08-26 | ~2h | M4 S4 🟡 | CLOSED the two oldest open items plus a carried receipt. CREATION TRANSACTION built — and built BETTER than decided: realised a data-modifying CTE makes it ONE STATEMENT, so implicit-transaction atomicity is free and 07-07's no-pinned-client rule survives; amends 08-18. Caught the hole the transaction alone does NOT close — an empty array is a LEGAL statement that commits a job row and inserts no items, so PG rolls back nothing and the 08-18 orphan walks back in through a success rather than a throw; fixed with `WHERE cardinality > 0`, and defended it against my own F-12 rule by separating a dead HANDLER (observes corruption, rots) from a dead CONSTRAINT (evaluated on every write, always true). `21000` CLOSED by chunk-time `DISTINCT ON` over a multi-arg `unnest` — chose removing the condition over extending the allowlist, and chunk-time over creation-time to keep 60-in/60-out. Real `23xxx` receipt CLOSED for free while testing: a `null` in the array produced a genuine `23514 check_url_format` from PG, permanent branch stamped and `continue`d, chunks 20 and 40 ran after it — which also DEMONSTRATED (not asserted) why `continue` beats blanket un-fail-on-retry: one bad chunk must not head-of-line-block the rest. Found `bulk_job_items.url` is nullable. 3 D-log rows | THE CARDINALITY RECEIPT — `cardinality > 0` has never executed, so the creation fix is built-and-reasoned, NOT proven, and I nearly wrote "proven" in this file (the exact F-12 sentence). The two cleanup items (`premanentErrors` typo, shadowed `error`). The `chunkItems.length` vs insert-count audit. 503 translation (filed to S5, arguably dodged). Proving rather than inferring the 08-21 creation-write backlog; the 08-19 missing-chunk-40 anomaly; fencing-tokens side-read |
-| 2026-08-27 | ~1h | M4 S4 ✅ CLOSED | PAID THE CARDINALITY RECEIPT: validator relaxed, POST `[]`, TypeError in the controller catch (expected either way) and `bulk_jobs` count unchanged (the real proof — the Node symptom is identical with or without the predicate). Validator restored; explicit throw added for the no-job-id case. Cleanup: both shadowed catch params renamed, `premanentErrors` log deleted. Traced the shadowing first — block-scoped catch params meant `throw error` already threw the original; hygiene, not a fix. Found notes-vs-code drift on the permanent branch (notes: swallow a failed stamp and continue; code: rethrow) and kept the CODE — a failed stamp is a plumbing failure, the items are still pending, the retry re-stamps; amended 08-24 row and F-13 | the Stage 4 lesson write-up in my own words; 503 translation (decide S5 vs pre-S5, stop deferring); `bulk_job_items.url NOT NULL` migration; the `chunkItems.length` vs insert-count logging audit; creation-write backlog proof; 08-19 anomaly; fencing-tokens side-read |
+| 2026-08-27 | ~2.5h | M4 S4 ✅ CLOSED → S5 🟡 | PAID THE CARDINALITY RECEIPT: validator relaxed, POST `[]`, TypeError in the controller catch (expected either way) and `bulk_jobs` count unchanged (the real proof — the Node symptom is identical with or without the predicate). Validator restored; explicit throw added for the no-job-id case. Cleanup: both shadowed catch params renamed, `premanentErrors` log deleted. Traced the shadowing first — block-scoped catch params meant `throw error` already threw the original; hygiene, not a fix. Found notes-vs-code drift on the permanent branch (notes: swallow a failed stamp and continue; code: rethrow) and kept the CODE — a failed stamp is a plumbing failure, the items are still pending, the retry re-stamps; amended 08-24 row and F-13. ARTICULATED THE S4 LESSON (branches were assumed, not covered; a green test can pass for a reason unrelated to correctness — go into the branch and force it). STARTED S5: chose Fargate over ASG (D-logged, reasoning not experience); found the image was arm64 vs Fargate's X86_64 default; rebuilt for amd64 and the cache-masked pnpm failure surfaced (pnpm 10 blocked-scripts rule + unpinned pnpm 11 in the image) — pinned `pnpm@10.32.0`, allowlisted esbuild; pushed `shortn:m4` to ECR in prod via assumed-role profile. Nothing billable running | 503 translation — deferred a THIRD time, now a firm S5 item before the health-check work; answering whether RDS/Redis still exist in prod; the 3 chained SGs + cluster + task def + service + ALB; `bulk_job_items.url NOT NULL` migration; the `chunkItems.length` vs insert-count logging audit; creation-write backlog proof; 08-19 anomaly; fencing-tokens side-read |
