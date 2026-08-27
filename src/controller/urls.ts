@@ -184,7 +184,15 @@ export async function createBatchShortUrlV2(
     });
     res.status(202).json({ jobId });
   } catch (err) {
-    console.error("Error inserting URLs:", err);
+    if (err instanceof AppError && err.code === "BATCH_JOB_CREATION_FAILED") {
+      return next(
+        new AppError(
+          "Failed to create batch insert job",
+          500,
+          "BATCH_JOB_CREATION_FAILED",
+        ),
+      );
+    }
     next(new AppError("Internal Server Error", 500, "INTERNAL_ERROR"));
   }
 }

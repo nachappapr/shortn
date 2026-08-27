@@ -469,6 +469,14 @@ export async function createBatchInsertJobV2(
     [webhookUrl || null, urls],
   );
 
+  if (!result.rows[0] || !result.rows[0].job_id) {
+    throw new AppError(
+      "Failed to create batch insert job",
+      500,
+      "BATCH_JOB_CREATION_FAILED",
+    );
+  }
+
   return result.rows[0].job_id;
 }
 
@@ -643,7 +651,6 @@ export async function processBatchInsertJobV2(
         logger(
           `[job ${jobId}] chunk failed (items ${i}-${i + batch.length}): ${error instanceof Error ? error.message : error}`,
         );
-        console.log("premanentErrors", permanentErrors, "errorCode", errorCode);
         if (permanentErrors) {
           try {
             await pool.query(
