@@ -1,6 +1,13 @@
 ## Current Position
 Current Position: Module 4, Stage 5 — STARTED 2026-08-27 (Fargate path). Stage 4 CLOSED
   2026-08-27, lesson articulated (see S4 LESSON below).
+  Session 09-01 — PLANNING ONLY, NOTHING PROVISIONED, nothing billable. Answered the open
+  question: RDS and ElastiCache were BOTH torn down after M3, so S5 starts with a
+  re-provisioning detour. Decided the S5 network shape end to end before touching the
+  console: ElastiCache (not a Redis sidecar, not a Redis ECS service); 2 AZs; private
+  subnets + VPC endpoints for the ECR pull (not a NAT, not public IPs). Three D-log rows
+  below. Also corrected the M3-era note in this file: the prod network is 9 subnets
+  (web/app/db × 3 AZs) with 3 route tables, not "2 public subnets".
   Session 08-27, second half — S5 start: chose ECS on Fargate over an EC2 ASG (D-logged);
   built the image for amd64 and pushed `shortn:m4` to ECR in the PROD account (via an
   assumed-role profile, `--profile prod`). Nothing billable is running — no cluster, no
@@ -34,23 +41,93 @@ Current Position: Module 4, Stage 5 — STARTED 2026-08-27 (Fargate path). Stage
   classifier; 08-21 k6 chunk ladder (5000ms validated, chunk 20).
 Module: Module 4
 Stage: 5 (AWS-native: ALB + ECS Fargate) 🟡
-Last session: 2026-08-27
-Next action: FIRST answer the open question: is RDS / Redis still running in the prod
-  account, or torn down after M3? (Decides whether S5 starts with re-provisioning them.)
-  Then, in order: (1) three security groups CHAINED BY SG, NOT CIDR — ALB SG allows 80
-  from 0.0.0.0/0; tasks SG allows 3000 from the ALB SG only; RDS/Redis SG allows
-  5432/6379 from the tasks SG only (task IPs change on every restart, so an IP rule rots).
-  (2) ECS cluster + task definition: image `<prod-acct>.dkr.ecr.ap-south-1.amazonaws.com/
+Last session: 2026-09-01 (planning only — no AWS resources created)
+Next action: BUILD THE PLUMBING IN ONE SESSION, in this order. Steps 1–7 are pure setup;
+  they cost money the whole time they're up and teach nothing new. The Stage 5 lessons
+  are step 8.
+  (1) Pick the SAME TWO AZs for web / app / db subnets and use them consistently.
+  (2) VPC ENDPOINTS ×3: `com.amazonaws.ap-south-1.ecr.api` (interface, both app subnets),
+  `com.amazonaws.ap-south-1.ecr.dkr` (interface, both app subnets),
+  `com.amazonaws.ap-south-1.s3` (GATEWAY — attach to the app route table, no ENI, no SG,
+  no hourly cost). Miss the S3 one and the pull authenticates fine then hangs on the first
+  layer, because ECR is a metadata front door and the layer BYTES live in S3.
+  (3) FOUR security groups, CHAINED BY SG, NEVER CIDR (a Fargate task's private IP changes
+  on every restart, so an IP rule rots):
+      ALB SG        ← inbound 80 from 0.0.0.0/0   (the only CIDR rule; "the internet" has no SG)
+      tasks SG      ← inbound 3000 from ALB SG
+      data SG       ← inbound 5432 + 6379 from tasks SG
+      endpoints SG  ← inbound 443 from tasks SG
+  (4) RDS + ElastiCache in the db subnets (both were torn down after M3 — this is the
+  re-provisioning detour).
+  (5) ECS cluster + task definition: image `<prod-acct>.dkr.ecr.ap-south-1.amazonaws.com/
   shortn:m4`, `runtimePlatform.cpuArchitecture = X86_64`, env for PG/Redis, CPU/mem.
-  (3) ECS service, desired count 3. (4) ALB + target group + listener; the service
-  registers tasks into the target group. Then the S5 lessons proper: health check pulling
-  a bad task out, connection draining on a deploy (tag `m4` vs a second tag), cross-AZ.
-  503 translation is a FIRM S5 ITEM (decided 08-27, deferred once more) — do it before
-  the ALB health-check exercise, since a healthy app answering 500 on DB-down is exactly
-  what the health check will have to reason about.
+  (6) ECS service, desired count 3, in the APP (private) subnets, `assignPublicIp` DISABLED.
+  (7) ALB + target group + listener; ALB lives in the WEB (public) subnets, in the SAME two
+  AZs as the tasks; the service registers tasks into the target group.
+  (8) THEN the S5 lessons proper, in this order: 503 translation FIRST (firm item, deferred
+  three times) — because a healthy app answering 500 on DB-down is exactly what the health
+  check will have to reason about; then health check pulling a bad task out; then connection
+  draining on a deploy (tag `m4` vs a second tag); then cross-AZ.
+  OPEN, decide at step 5: does the task need a CloudWatch Logs VPC endpoint too? Depends on
+  the log driver chosen for the task definition — a private task with `awslogs` and no route
+  out cannot ship logs.
   Still carried, not blocking: `bulk_job_items.url NOT NULL` migration; the
   `chunkItems.length` vs insert-count logging audit; creation-write backlog proof;
   08-19 anomaly; fencing-tokens side-read.
+
+Verified this session (2026-09-01) — the AWS networking model, before building anything:
+  - FARGATE IS AN ENI IN MY SUBNET. The mental swap from EC2: instead of "an instance in a
+    subnet," it is "an ENI in a subnet." ECS creates a real network interface inside the
+    subnet named in the service config, gives it a private IP from my CIDR and my security
+    groups, and attaches a container running on AWS-managed hardware I never see. It obeys
+    my route tables and my SGs exactly like anything else in the VPC. The compute host is
+    the layer I deleted by not using an ASG.
+  - THE IMAGE PULL IS AN OUTBOUND CALL. ECR is a regional AWS service OUTSIDE my VPC, so
+    pulling `shortn:m4` is, from the ENI's point of view, a call to the internet. Four
+    outcomes: public subnet + public IP → works via IGW; public subnet + NO public IP →
+    route exists but no return path, task hangs and dies (the confusing one); private
+    subnet → no IGW route, needs NAT ($32/mo); private subnet + VPC endpoints → never
+    leaves AWS's network. Also: it is the ECS AGENT that pulls, THROUGH my ENI, before my
+    code runs — so a failure looks like a task that never starts with
+    `CannotPullContainerError`, not an app crash.
+  - PUBLIC SUBNET ≠ PUBLICLY ACCESSIBLE. This is the one that would have made me buy a NAT
+    Gateway I did not need. "Public subnet" is a ROUTE TABLE property (`0.0.0.0/0 → IGW`).
+    Reachability is a SECURITY GROUP property. A task with a public IP whose SG allows 3000
+    from the ALB SG only is ADDRESSABLE but not REACHABLE — a packet from a random host on
+    the internet is dropped by the SG. Routing and reachability are two different questions
+    and people conflate them.
+  - AN INTERFACE VPC ENDPOINT IS ALSO JUST AN ENI. It gets a private IP in my subnet; AWS
+    then overrides DNS so `api.ecr.ap-south-1.amazonaws.com` resolves to that private IP
+    inside the VPC. Nothing in my code or the ECS agent changes — same hostname, private
+    address. The traffic is then ordinary ENI-to-ENI VPC traffic, which is why it needs an
+    SG. Direction matters: the TASK is the client, the ENDPOINT is the server, so the rule
+    is "allow 443 FROM the tasks SG," not "from the endpoint."
+  - SG RULE SOURCES ARE CALLERS, NOT PORTS. I reached for "ephemeral port" as the source.
+    Wrong shape: SGs are stateful, so return traffic to the client's ephemeral port is
+    allowed automatically and is never written as a rule. Source = who is calling.
+  - COST SHAPES (corrected my guesses):
+    * NOTHING between tasks / RDS / Redis goes over the internet — it is private VPC
+      traffic. Same AZ = FREE. Cross-AZ = ~$0.01/GB, charged in EACH direction, metered on
+      BYTES not queries (so a 60-URL batch is rounding error).
+    * "Same AZ" is not a decision I get to make once. Desired count 3 across 2 AZs, RDS in
+      ONE AZ → a third to a half of my tasks are ALWAYS cross-AZ from the database, and
+      which ones changes on every deploy/restart/scale event. That is the PRICE OF
+      AVAILABILITY, not a bug to eliminate.
+    * ALB IS NOT PER-REQUEST. Two meters: a FLAT HOURLY fee (~$0.0225/hr Mumbai, ~$16/mo)
+      that runs at zero traffic, plus LCU-hours (new connections / active connections /
+      processed bytes / rule evaluations — you pay the highest dimension). Plus data
+      transfer OUT to the internet. At my scale the LCUs round to nothing, so the flat fee
+      IS the ALB bill: ~$0.07 for a 3h session whether I send 0 requests or a million.
+      SAME LESSON AS ROUTE 53 IN M2, second time: at learning scale fixed fees dominate
+      and usage fees vanish — exactly backwards from production.
+    * FARGATE HAS NO VOLUME AND NO INSTANCE — billed per vCPU-second and GB-second from
+      image pull to task stop. That is what rejecting the ASG bought.
+  - COST GUESS ON RECORD (compare at Stage 6): I first guessed RDS > ElastiCache, and left
+    out both the ALB and Fargate entirely. Corrected forecast for a ~3h session:
+    Fargate ×3 @0.25vCPU/0.5GB ≈ $0.11 > ALB flat ≈ $0.07 > VPC endpoints ≈ $0.08
+    > RDS t3.micro ≈ $0.05 ≈ ElastiCache t3.micro ≈ $0.05. FARGATE LEADS — first time in
+    this curriculum that compute tops the bill, and only because I multiplied it by three.
+    Fixed costs stay fixed; compute scales with desired count.
 
 Verified this session (2026-08-27) — S5 start, the image story:
   - DOCKER IMAGES ARE PER-CPU, NOT PLATFORM-INDEPENDENT. The Mac build was `arm64`;
@@ -245,6 +322,19 @@ CARRIED / DON'T FORGET:
   constant `FROM --platform`, which BuildKit lints and which blocks multi-arch later.
 - NEW (08-27, filed for M9): build images in CI (CodeBuild or GitHub Actions → ECR) so
   the artifact never depends on which laptop ran `docker build`.
+- NEW (09-01), TEARDOWN CHECKLIST ADDITION: **VPC ENDPOINTS are not on the standard 12-line
+  checklist.** Two interface endpoints (ecr.api, ecr.dkr) bill per ENI per hour and will sit
+  there silently after the session. Add a line: "delete VPC endpoints (interface ones bill
+  hourly; the S3 gateway endpoint is free but delete it anyway)". Also add ECS (stop service,
+  delete cluster) — already line 10 of the standard list, but this is the first module that
+  actually uses it.
+- NEW (09-01): step 5 of the build order has an unanswered dependency — a task in a PRIVATE
+  subnet with the `awslogs` driver has no route to CloudWatch Logs. Either add a
+  `com.amazonaws.ap-south-1.logs` interface endpoint (a fourth endpoint, more hourly cost,
+  more teardown) or accept no logs. Decide when writing the task definition, not before.
+- NEW (09-01): `com.amazonaws.ap-south-1.s3` is a GATEWAY endpoint, not an interface one —
+  it attaches to a ROUTE TABLE, has no ENI, no SG, and no hourly charge. It will behave
+  differently from the other two in the console and that is expected, not a mistake.
 - NEW (08-27): `npm install -g pnpm` unpinned in the Dockerfile handed the image pnpm 11
   while the Mac runs 10.32 — now pinned `pnpm@10.32.0`. Same class as the platform bug:
   a build input that silently depends on WHEN it ran.
@@ -295,6 +385,10 @@ CARRIED / DON'T FORGET:
 - Known gap: 30s max request origin unconfirmed — carried from M3.
 - ~~Is Stage 4 done?~~ Stage 4 DONE 2026-08-27 — cardinality receipt paid, cleanup done.
   Lesson articulation pending (see Next action).
+- ~~Are RDS / Redis still running in the prod account after M3?~~ **ANSWERED 2026-09-01: NO,
+  both torn down.** S5 therefore starts with a re-provisioning detour (build-order step 4).
+- OPEN (09-01): CloudWatch Logs endpoint for private tasks — see CARRIED. Decide at the task
+  definition, not before.
 - 503 translation: **DECIDED 2026-08-27 — S5 item, before the ALB health-check work.**
   History: FILED AS STAGE 5 on 08-26 — but flag this as a judgement call, because
   it is not obviously AWS-native work either. It is one branch in the error middleware
@@ -314,7 +408,7 @@ CARRIED / DON'T FORGET:
 | 1 | Single Box | ✅ Done | 2026-04-27 | 2026-04-29 | — |
 | 2 | API Design | ✅ Done | 2026-05-01 | 2026-05-12 | — |
 | 3 | Caching | ✅ Done| 2026-05-12 | 2026-06-11 | — |
-| 4 | Horizontal Scale | 🟡 | 2026-06-11 | — | S3 ✅ closed 07-09; S4 🟡 in progress (guard branch proven 07-20, F-12; cold-start re-audit 08-18 clean, 3 new findings; k6 chunk run DONE 08-21 — 5000ms validated, chunk size 20 unchanged; transient-failed-items fixed 08-24, F-13; creation CTE built + `21000` closed by dedupe + real `23514` receipt 08-26; cardinality receipt paid + cleanup + notes-vs-code drift resolved 08-27, S4 ✅); S5 🟡 started 08-27 (Fargate chosen, amd64 image pushed to ECR in prod; nothing billable running); S6/S7 remain |
+| 4 | Horizontal Scale | 🟡 | 2026-06-11 | — | S3 ✅ closed 07-09; S4 🟡 in progress (guard branch proven 07-20, F-12; cold-start re-audit 08-18 clean, 3 new findings; k6 chunk run DONE 08-21 — 5000ms validated, chunk size 20 unchanged; transient-failed-items fixed 08-24, F-13; creation CTE built + `21000` closed by dedupe + real `23514` receipt 08-26; cardinality receipt paid + cleanup + notes-vs-code drift resolved 08-27, S4 ✅); S5 🟡 started 08-27 (Fargate chosen, amd64 image pushed to ECR in prod; nothing billable running); 09-01 S5 network shape decided end-to-end — ElastiCache over a Redis sidecar, 2 AZs, private subnets + VPC endpoints over NAT/public IPs; RDS + Redis confirmed torn down after M3 so a re-provisioning detour is step 4; still nothing billable; S6/S7 remain |
 | 5 | Async Work | ⬜ | — | — | — |
 | 6 | Data: Replication, Sharding, Migrations | ⬜ | — | — | — |
 | 7 | Auth & Security | ⬜ | — | — | — |
@@ -391,6 +485,9 @@ CARRIED / DON'T FORGET:
 | 2026-08-26 | 4 | `WHERE cardinality($2::text[]) > 0` on the job insert is KEPT even though the request validator already rejects an empty array — and this is NOT the F-12 disease | first, they are different rules wearing one hat: the validator enforces a PRODUCT rule ("a client who sends `[]` gets a 400 with a useful message") and covers only callers arriving through the HTTP route; the predicate enforces a STRUCTURAL INVARIANT ("a `bulk_jobs` row without items must not exist") and binds every writer of that table — retry paths, backfills, a `psql` session at 11pm. Second, and the reusable rule: **a dead HANDLER is F-12; a dead CONSTRAINT is not.** The rejected 08-18 zero-item guard in `getFinalCompletionStatus` would only run once corruption already existed — it observes a bad state and relabels it, so it cannot be tested and it rots. The predicate never reacts to anything; it is a condition on the write that makes the bad state unrepresentable, and it is EVALUATED ON EVERY INSERT FOREVER — always true, never dead. Same category as `job_id NOT NULL`, which nobody calls dead code. The test is: does it run only in the bad case, or on every write? | without the predicate the failure mode is silent and legal, not an error: with an empty array the statement SUCCEEDS, `bulk_jobs` gets its row, `bulk_job_items` gets none, PG has nothing to roll back, Node throws a TypeError on `rows[0]`, the controller 500s — and the committed `pending` orphan is picked up by the dispatcher ~2s later and reported `completed`. The 08-18 bug, re-entering through a legal statement rather than a throw. Atomicity does not cover this; only the predicate does |
 | 2026-08-26 | 4 | `21000` closed by DEDUPING WITHIN THE CHUNK (`SELECT DISTINCT ON (u.url) u.code, u.url FROM unnest($1::text[], $2::text[]) AS u(code, url)`), over (a) deduping at creation or (b) adding `21000` to the permanent allowlist | (b) is wrong because it makes the client pay for a legal request: a batch listing one destination twice is not a malformed batch, and under the CTE worker a permanent stamp condemns all 20 items in the chunk, 19 of them healthy, to buy nothing. (a) is wrong because the client sends 60 URLs and gets 59 results — the response shape stops matching the request shape and the client must diff their input against the output to work out what happened. (c), chunk-time, preserves 60-in/60-out AND makes the batch path agree with the rule 08-18 already committed to: same URL, same row, same code. One insert, both item rows stamped `completed` by the url-based join, both carrying the same `url_id` — which is correct, they ARE the same destination. Best property: the classifier is untouched, because the error can no longer be RAISED. Removing the condition beats extending the allowlist | the url-based join (`WHERE bjt.url = inserted.original_url AND bjt.job_id = $3`) is now LOAD-BEARING rather than incidental — it is what makes both duplicate item rows resolve from one inserted row, and it also means a chunk can stamp item rows belonging to a LATER chunk when a duplicate spans chunk boundaries (harmless, idempotent, but true). Same shape as the 08-21 `AND status='pending'` predicate: it reads as ordinary SQL and its importance lives here, not in the code. Also: multi-argument `unnest` is what makes this safe — pairing the code and url arrays INSIDE Postgres means there is no moment where two independently-mutable JS arrays can desynchronise and mint codes against the wrong destinations |
 | 2026-08-27 | 4 | S5 runs on ECS FARGATE, not an EC2 Auto Scaling Group | `shortn` already ships as a container (M4 S0), so the VM under it would be pure overhead I'd be patching and sizing for nothing — Fargate deletes that layer; hand AWS the image + a task definition and it runs. Honest note: I have not used Fargate before, so the "why" is reasoning, not experience. "Learn both" was rejected: it doubles the bill and the teardown list; the ASG comparison becomes a 15-minute Stage 6 cost read instead | pricier per task-hour than the equivalent EC2, and I lose the box — no SSH, no `top`, no `pg_stat_activity` from the host; debugging is logs-only. Also forced the first S5 lesson early: images are per-CPU (arm64 Mac vs X86_64 Fargate default), so the build target has to be pinned in the repo |
+| 2026-09-01 | 4 | Redis for S5 is ELASTICACHE — not a Redis container as a second container in the task definition (sidecar), and not a separate ECS service running the Redis image | a Fargate TASK is the unit that gets replicated, so desired count 3 with a Redis sidecar means THREE Redises, each on its own `localhost`. That is F-09's neighbour wearing a different hat and it re-breaks the exact bug fixed in M4 S0: the rate limiter's state would be per-instance again, allowing 3× the limit, and the cache would be three independent caches. The Redis-as-ECS-service option is NOT wrong for the reason I first gave (desired count 1 is also one shared Redis, no replication, no sync problem) — it is wrong because that single task has no durable storage and no failover, so an ECS restart wipes every rate-limit counter and every cached code at once. That is operating a database by hand inside a compute orchestrator. ElastiCache is the same shape with someone else running it. NOTE: Redis is NOT optional here — the 06-16 decision made the open breaker FAIL CLOSED (`SERVICE_UNAVAILABLE`), so "the app works without Redis" is false as the code stands; no reachable Redis = every redirect 503s | another managed service to provision, pay for, and tear down, on a stage whose actual lesson is ALB + ECS behaviour. Also a per-node-hour charge that runs whether or not a single request arrives |
+| 2026-09-01 | 4 | S5 runs in TWO AZs — not one, not three | 2 is the smallest configuration that can actually SHOW cross-AZ behaviour, which is on the S5 lesson list, AND it is the ALB's own hard minimum (AWS refuses to create one with a single subnet, because the ALB runs a node per AZ and must not itself be a single point of failure). 3 AZs would cost ~50% more on the per-AZ resources (endpoint ENIs, cross-AZ paths), add ~50% more teardown lines, and teach exactly the same concept | RDS lives in ONE AZ, so roughly half the tasks pay a cross-AZ hop on every query, and I am deliberately NOT optimising that away — pinning tasks to the DB's AZ would defeat the point of running in 2 AZs at all. Also: the ALB must be given the WEB subnets in the SAME two AZs as the tasks, or every request crosses an AZ for no benefit — a silent, permanent cost with nothing bought |
+| 2026-09-01 | 4 | Tasks go in PRIVATE (app-tier) subnets with VPC ENDPOINTS for the ECR pull — over (A) public subnets with `assignPublicIp: ENABLED`, and over (B) private subnets with a NAT Gateway | honest why: **A was the better engineering answer for this stage and I chose C anyway, deliberately, to learn endpoints.** A is free, adds zero resources, and is EQUALLY SECURE — a public IP makes a task addressable, not reachable, and the tasks SG allows 3000 from the ALB SG only, so a packet from the internet is dropped. B is the trap: the instinct to go private leads straight to a NAT Gateway at ~$0.045/hr + $0.045/GB (~$32/mo), which is more than the ALB, RDS and ElastiCache COMBINED, and it is the thing most likely to be forgotten at teardown. C keeps the traffic off the internet entirely and costs ~$0.013/hr per interface ENI. I am buying a learning experience for ~$0.08 and saying so out loud rather than pretending it is the cheap option | three endpoints to create instead of one flag, and the failure modes are new to me: miss `ecr.dkr` and the pull dies, miss the S3 GATEWAY endpoint and the pull authenticates then hangs on the first layer (image bytes live in S3; ECR is a metadata front door). Two more hourly-billed ENIs and two more teardown lines that are NOT on my standard checklist. Also an unresolved dependency: a private task with the `awslogs` driver may need a fourth endpoint for CloudWatch Logs. For production the answer stays C; for a learning stage A was defensible and I passed on it |
 
 ---
 
@@ -579,8 +676,29 @@ CARRIED / DON'T FORGET:
 
 **Running total:** $1.59 (excl. tax) / $1.86 (incl. tax)
 
+**No cost row for 2026-09-01** — planning session, zero resources created, nothing billable.
+
+**FORECAST ON RECORD for the M4-S5 build session (compare against Cost Explorer at Stage 6):**
+
+| Service | ~3h estimate | Shape |
+|---|---|---|
+| Fargate ×3 @ 0.25 vCPU / 0.5 GB | ~$0.11 | per vCPU-sec + GB-sec, ×3 tasks — scales with desired count |
+| VPC endpoints (2 interface ENIs) | ~$0.08 | per ENI-hour; S3 gateway endpoint is free |
+| ALB | ~$0.07 | FLAT hourly; LCUs round to zero at my traffic |
+| RDS db.t3.micro | ~$0.05 | per instance-hour |
+| ElastiCache cache.t3.micro | ~$0.05 | per node-hour, idle or not |
+| Cross-AZ data transfer | ~$0.00 | $0.01/GB each way; my payloads are kilobytes |
+
+- MY FIRST GUESS WAS WRONG: I said "RDS first, then ElastiCache," left out the ALB entirely,
+  and assumed app→DB traffic crossed the internet and that Fargate billed for a volume. The
+  real leader is FARGATE, purely because desired count is 3.
+- SANITY CHECK AT STAGE 6: if the bill is much higher than ~$0.36, the likely culprits are a
+  NAT Gateway I created by accident, endpoints left running after teardown, or an ALB left up
+  overnight (the flat fee does not care that traffic stopped).
+
 **Cost surprises** (things that cost more than I expected — review before starting next module):
 - Route 53 $0.50 dominated M2 costs — more than EC2+RDS+VPC combined. Hosted zone fee ($0.50/month flat) dwarfs compute at this small scale.
+- (Anticipated, 09-01) NAT Gateway ~$32/mo would have been the single biggest line item in this whole curriculum — and I nearly reached for one out of the reflex that "private subnet" requires it. The SG, not the subnet, was already doing the security work.
 
 ---
 
@@ -715,4 +833,4 @@ CARRIED / DON'T FORGET:
 | 2026-08-21 | ~3h | M4 S4 🟡 | RAN THE K6 CHUNK LADDER — the blocker from 08-18 is gone and Stage 4's main event is closed. Solved "N concurrent jobs on demand" with k6 `per-vu-iterations` (vus=N, iterations=1) as a starting gun rather than an RPS load test; per-VU unique URLs so jobs don't collide on `ON CONFLICT`. Made the instrumentation permanent: `t0` outside the chunk try, JSON `chunk_ok`/`chunk_fail` lines with duration on BOTH paths (caught a copy-paste where the catch logged `chunk_ok` — a mislabelled line in a failure path that had never run, F-12's cousin). Results 6/12/24 → max 2/4/18ms vs a 5000ms timeout; kept chunk size 20 and the timeout unchanged, and logged WHY sizing up is the wrong search (blast radius, not throughput). Learned the harness lesson the hard way: 6 and 12 jobs produced only ~2 concurrent chunks because a Node instance can only send one query at a time and spends most of its life not-querying — the apps couldn't feed PG hard enough to make it struggle. Traced the 18ms spike to two DIFFERENT instances slowing simultaneously → cause must be the shared thing (PG), attributed to ~1,440 creation-write inserts from the burst. Corrected the 08-18 note claiming `query_timeout` includes pool-wait (it doesn't — the timer arms after `pool.connect` returns). Noticed the inner catch's `status='pending'` predicate is load-bearing against the abandoned-CTE race. 2 D-log rows | the transient-failed-items bug (still un-attacked, now the leading Stage-4 candidate); building the creation transaction; proving rather than inferring the creation-write backlog; the unexplained 08-19 missing-chunk-40 / 37s-gap anomaly; 503 translation; fencing-tokens side-read |
 | 2026-08-24 | ~2h | M4 S4 🟡 | FIXED the transient-failed-items bug (F-13), the leading Stage-4 candidate since 08-18. Killed the timing dependency first: built `FORCE_CHUNK_ERROR=before\|after` (dev-gated, chunk 0, attempt 1) so the branch fires deterministically instead of requiring PG to die and revive inside a millisecond window — reproducing the EFFECT beat reproducing the CAUSE, and the synthetic throw turned out to model the common case (socket reset, timeout trip, failover) better than a docker kill did. `before` run: 20 healthy URLs stamped `failed`, no short codes ever minted, job `partial`, `attempts=1`, `error=NULL` — a job that looks perfectly healthy and lies. `after` run: `chunk_failed` logged at 4ms and 60/60 completed — which RETIRES the 08-21 "load-bearing predicate" claim from reasoned to PROVEN. Fix = classify on `err.code`, permanent swallows and continues, transient rethrows into the outer catch that was already the retry path. Verified both branches + a real `docker stop postgres` (exercised the SLOW lane: outer guard fired, reaper flipped the row, retry completed 60/60). Found `21000` as the allowlist's known omission. Amended 07-02: the CTE worker is the default, and had been for 7 weeks without a decision | building the creation transaction (decided 08-18, STILL not built); 503 translation; the real `23505` receipt; the `21000` gap; proving rather than inferring the 08-21 creation-write backlog; the unexplained 08-19 missing-chunk-40 anomaly; fencing-tokens side-read |
 | 2026-08-26 | ~2h | M4 S4 🟡 | CLOSED the two oldest open items plus a carried receipt. CREATION TRANSACTION built — and built BETTER than decided: realised a data-modifying CTE makes it ONE STATEMENT, so implicit-transaction atomicity is free and 07-07's no-pinned-client rule survives; amends 08-18. Caught the hole the transaction alone does NOT close — an empty array is a LEGAL statement that commits a job row and inserts no items, so PG rolls back nothing and the 08-18 orphan walks back in through a success rather than a throw; fixed with `WHERE cardinality > 0`, and defended it against my own F-12 rule by separating a dead HANDLER (observes corruption, rots) from a dead CONSTRAINT (evaluated on every write, always true). `21000` CLOSED by chunk-time `DISTINCT ON` over a multi-arg `unnest` — chose removing the condition over extending the allowlist, and chunk-time over creation-time to keep 60-in/60-out. Real `23xxx` receipt CLOSED for free while testing: a `null` in the array produced a genuine `23514 check_url_format` from PG, permanent branch stamped and `continue`d, chunks 20 and 40 ran after it — which also DEMONSTRATED (not asserted) why `continue` beats blanket un-fail-on-retry: one bad chunk must not head-of-line-block the rest. Found `bulk_job_items.url` is nullable. 3 D-log rows | THE CARDINALITY RECEIPT — `cardinality > 0` has never executed, so the creation fix is built-and-reasoned, NOT proven, and I nearly wrote "proven" in this file (the exact F-12 sentence). The two cleanup items (`premanentErrors` typo, shadowed `error`). The `chunkItems.length` vs insert-count audit. 503 translation (filed to S5, arguably dodged). Proving rather than inferring the 08-21 creation-write backlog; the 08-19 missing-chunk-40 anomaly; fencing-tokens side-read |
-| 2026-08-27 | ~2.5h | M4 S4 ✅ CLOSED → S5 🟡 | PAID THE CARDINALITY RECEIPT: validator relaxed, POST `[]`, TypeError in the controller catch (expected either way) and `bulk_jobs` count unchanged (the real proof — the Node symptom is identical with or without the predicate). Validator restored; explicit throw added for the no-job-id case. Cleanup: both shadowed catch params renamed, `premanentErrors` log deleted. Traced the shadowing first — block-scoped catch params meant `throw error` already threw the original; hygiene, not a fix. Found notes-vs-code drift on the permanent branch (notes: swallow a failed stamp and continue; code: rethrow) and kept the CODE — a failed stamp is a plumbing failure, the items are still pending, the retry re-stamps; amended 08-24 row and F-13. ARTICULATED THE S4 LESSON (branches were assumed, not covered; a green test can pass for a reason unrelated to correctness — go into the branch and force it). STARTED S5: chose Fargate over ASG (D-logged, reasoning not experience); found the image was arm64 vs Fargate's X86_64 default; rebuilt for amd64 and the cache-masked pnpm failure surfaced (pnpm 10 blocked-scripts rule + unpinned pnpm 11 in the image) — pinned `pnpm@10.32.0`, allowlisted esbuild; pushed `shortn:m4` to ECR in prod via assumed-role profile. Nothing billable running | 503 translation — deferred a THIRD time, now a firm S5 item before the health-check work; answering whether RDS/Redis still exist in prod; the 3 chained SGs + cluster + task def + service + ALB; `bulk_job_items.url NOT NULL` migration; the `chunkItems.length` vs insert-count logging audit; creation-write backlog proof; 08-19 anomaly; fencing-tokens side-read |
+| 2026-08-27 | ~2.5h | M4 S4 ✅ CLOSED → S5 🟡 | PAID THE CARDINALITY RECEIPT: validator relaxed, POST `[]`, TypeError in the controller catch (expected either way) and `bulk_jobs` count unchanged (the real proof — the Node symptom is identical with or without the predicate). Validator restored; explicit throw added for the no-job-id case. Cleanup: both shadowed catch params renamed, `premanentErrors` log deleted. Traced the shadowing first — block-scoped catch params meant `throw error` already threw the original; hygiene, not a fix. Found notes-vs-code drift on the permanent branch (notes: swallow a failed stamp and continue; code: rethrow) and kept the CODE — a failed stamp is a plumbing failure, the items are still pending, the retry re-stamps; amended 08-24 row and F-13. ARTICULATED THE S4 LESSON (branches were assumed, not covered; a green test can pass for a reason unrelated to correctness — go into the branch and force it). STARTED S5: chose Fargate over ASG (D-logged, reasoning not experience); found the image was arm64 vs Fargate's X86_64 default; rebuilt for amd64 and the cache-masked pnpm failure surfaced (pnpm 10 blocked-scripts rule + unpinned pnpm 11 in the image) — pinned `pnpm@10.32.0`, allowlisted esbuild; pushed `shortn:m4` to ECR in prod via assumed-role profile. Nothing billable running | 503 translation — deferred a THIRD time, now a firm S5 item before the health-check work; answering whether RDS/Redis still exist in prod; the 3 chained SGs + cluster + task def + service + ALB; `bulk_job_items.url NOT NULL` migration; the `chunkItems.length` vs insert-count logging audit; creation-write backlog proof; 08-19 anomaly; fencing-tokens side-read || 2026-09-01 | ~1h | M4 S5 🟡 | PLANNING ONLY — nothing provisioned, nothing billable. Answered the 08-27 blocker: RDS and ElastiCache were both torn down after M3, so S5 opens with a re-provisioning detour. Decided the whole S5 network shape before touching the console (3 D-log rows): (1) ElastiCache over a Redis SIDECAR — desired count 3 with a sidecar = three Redises on three `localhost`s, which re-breaks the per-instance-state bug fixed in M4 S0 and would let the rate limiter allow 3× the limit; also corrected my own reasoning that a single Redis ECS service "replicates" (it doesn't — the real objection is no durability, no failover). Noted Redis is NOT optional because the 06-16 breaker decision is fail-CLOSED. (2) 2 AZs — the ALB's hard minimum and the smallest config that actually shows cross-AZ behaviour; 3 buys the same lesson at +50% cost and teardown. (3) Private subnets + VPC endpoints over public-IP tasks and over a NAT Gateway — logged honestly that the public-IP option was FREE and EQUALLY SECURE and I chose endpoints anyway to learn them for ~$0.08. Learned the Fargate model (a task is an ENI in my subnet, not an instance), why the ECR pull is an outbound call made by the ECS agent through my ENI, and the correction that matters most: PUBLIC SUBNET ≠ PUBLICLY ACCESSIBLE — routing is the route table's job, reachability is the SG's, and conflating them is how people buy a $32/mo NAT they don't need. Also got the SG rule direction wrong twice (said "allow from the endpoint" and "source = ephemeral port") and re-derived that a rule's source is the CALLER, since SGs are stateful. Corrected the cost model: nothing goes over the internet inside the VPC, ALB is a FLAT hourly fee not per-request (Route 53 lesson, second time), Fargate has no volume — and put a forecast on record with Fargate leading at ~$0.11/3h | THE ENTIRE BUILD — endpoints, 4 SGs, RDS + ElastiCache re-provision, cluster, task def, service, ALB. 503 translation (deferred a FOURTH time, now first item after the plumbing). The CloudWatch Logs endpoint question. `bulk_job_items.url NOT NULL` migration; the `chunkItems.length` vs insert-count logging audit; creation-write backlog proof; 08-19 anomaly; fencing-tokens side-read |
