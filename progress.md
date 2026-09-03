@@ -1,6 +1,18 @@
 ## Current Position
 Current Position: Module 4, Stage 5 — STARTED 2026-08-27 (Fargate path). Stage 4 CLOSED
   2026-08-27, lesson articulated (see S4 LESSON below).
+  Session 09-02 — FIRST BILLABLE S5 SESSION. Built steps 1–4 of the build order, then
+  STOPPED AT 23:30 and tore the billables down rather than rush steps 5–8 at midnight.
+  Built: 5 SGs chained (alb → tasks → data + endpoints), 2 subnet groups (RDS + cache),
+  4 VPC endpoints (ecr.api, ecr.dkr, logs — all interface, both APP subnets; s3 gateway on
+  the app route table), RDS `shortn-prod-db` db.t3.micro single-AZ in ap-south-1a,
+  ElastiCache `shortn-cache` cache.t4g.micro Redis OSS, 0 replicas, ap-south-1a.
+  AZs CHANGED from the 09-01 plan: az1 + az2 = **ap-south-1a + ap-south-1c** (NOT az3).
+  Note the ID-vs-name shuffle: `aps1-az3` is `ap-south-1b` and `aps1-az2` is `ap-south-1c`
+  — they do not line up numerically, which is the whole point of AZ IDs.
+  TORN DOWN at end of session: RDS, ElastiCache, all 4 interface endpoints, s3 gateway.
+  KEPT (all free): 5 SGs, both subnet groups.
+  Resources were up ~45 min, so expect a few cents in Cost Explorer — LOG IT as its own row.
   Session 09-01 — PLANNING ONLY, NOTHING PROVISIONED, nothing billable. Answered the open
   question: RDS and ElastiCache were BOTH torn down after M3, so S5 starts with a
   re-provisioning detour. Decided the S5 network shape end to end before touching the
@@ -41,39 +53,128 @@ Current Position: Module 4, Stage 5 — STARTED 2026-08-27 (Fargate path). Stage
   classifier; 08-21 k6 chunk ladder (5000ms validated, chunk 20).
 Module: Module 4
 Stage: 5 (AWS-native: ALB + ECS Fargate) 🟡
-Last session: 2026-09-01 (planning only — no AWS resources created)
-Next action: BUILD THE PLUMBING IN ONE SESSION, in this order. Steps 1–7 are pure setup;
-  they cost money the whole time they're up and teach nothing new. The Stage 5 lessons
-  are step 8.
-  (1) Pick the SAME TWO AZs for web / app / db subnets and use them consistently.
-  (2) VPC ENDPOINTS ×3: `com.amazonaws.ap-south-1.ecr.api` (interface, both app subnets),
-  `com.amazonaws.ap-south-1.ecr.dkr` (interface, both app subnets),
-  `com.amazonaws.ap-south-1.s3` (GATEWAY — attach to the app route table, no ENI, no SG,
-  no hourly cost). Miss the S3 one and the pull authenticates fine then hangs on the first
-  layer, because ECR is a metadata front door and the layer BYTES live in S3.
-  (3) FOUR security groups, CHAINED BY SG, NEVER CIDR (a Fargate task's private IP changes
-  on every restart, so an IP rule rots):
-      ALB SG        ← inbound 80 from 0.0.0.0/0   (the only CIDR rule; "the internet" has no SG)
-      tasks SG      ← inbound 3000 from ALB SG
-      data SG       ← inbound 5432 + 6379 from tasks SG
-      endpoints SG  ← inbound 443 from tasks SG
-  (4) RDS + ElastiCache in the db subnets (both were torn down after M3 — this is the
-  re-provisioning detour).
-  (5) ECS cluster + task definition: image `<prod-acct>.dkr.ecr.ap-south-1.amazonaws.com/
-  shortn:m4`, `runtimePlatform.cpuArchitecture = X86_64`, env for PG/Redis, CPU/mem.
+Last session: 2026-09-02 (steps 1–4 built and torn down; steps 5–8 remain)
+
+**COLD-START QUESTION FOR NEXT SESSION — answer this BEFORE opening the console:**
+  *Say the S5 network model back in your own words: what a Fargate task actually is, and
+  why the ECR pull needed three endpoints (and what each of the three does).* If it does
+  not come out cleanly, re-read the 09-01 and 09-02 "Verified this session" blocks first.
+  Same ritual as 08-18: read the notes against reality before trusting either.
+
+Next action: REBUILD steps 1–4 (~20 min, all decisions already made — see the 09-02 block
+  for exactly what was created), then continue from step 5. Steps 5–7 are pure setup; they
+  cost money the whole time they're up and teach nothing new. The Stage 5 lessons are step 8.
+  (1) ✅ DONE 09-02 — AZs are **ap-south-1a + ap-south-1c** for web / app / db. Use these
+  two everywhere, including the ALB's web subnets.
+  (2) ✅ DONE 09-02 — VPC ENDPOINTS ×4 (was ×3; `logs` added, see D-log 09-02):
+  `ecr.api` (interface, both APP subnets), `ecr.dkr` (interface, both APP subnets),
+  `logs` (interface, both APP subnets), `s3` (GATEWAY — attach to the APP route table,
+  no ENI, no SG, no hourly cost). All interface endpoints take `shortn-endpoints-sg` and
+  need "Enable private DNS name" TICKED — that checkbox IS the mechanism.
+  Miss the S3 one and the pull authenticates fine then hangs on the first layer, because
+  ECR is a metadata front door and the layer BYTES live in S3.
+  **MISTAKE MADE 09-02, WATCH FOR IT ON THE REBUILD:** the first endpoint was created in
+  the DB subnets, not the app subnets. The console preselects nothing helpful and the
+  subnet IDs all look alike. Caught it only because a db subnet ID appeared in BOTH the
+  endpoint config and the cache subnet group. Verify each endpoint's Subnets tab after
+  creating it. (Subnets on an existing endpoint ARE editable — no need to recreate.)
+  (3) ✅ DONE 09-02 — FIVE security groups now (four in the plan + the endpoints one),
+  CHAINED BY SG, NEVER CIDR (a Fargate task's private IP changes on every restart, so an
+  IP rule rots). Order of creation matters: `shortn-tasks-sg` must exist as an empty shell
+  BEFORE `shortn-endpoints-sg`, because the endpoints rule names it as a source, and the
+  endpoints SG is needed at step 2:
+      shortn-alb-sg        ← inbound 80 from 0.0.0.0/0  (the only CIDR rule; "the internet" has no SG)
+      shortn-tasks-sg      ← inbound 3000 from alb SG   (Custom TCP — 3000 has no preset)
+      shortn-data-sg       ← inbound 5432 + 6379 from tasks SG
+      shortn-endpoints-sg  ← inbound 443 from tasks SG
+  Nothing is ever written on the CALLER's SG — SGs are stateful, return traffic is implicit.
+  (4) ✅ DONE 09-02 — RDS + ElastiCache in the DB subnets. Needs TWO subnet groups first
+  (RDS console and ElastiCache console keep their own; both free; both were gone after M3):
+  `shortn-db-subnet-group` and `shortn-cache-subnet-group`, each on the db subnets in
+  ap-south-1a + ap-south-1c. RDS: PostgreSQL, Sandbox template (= the renamed Free tier),
+  db.t3.micro, single-AZ, public access NO, `shortn-data-sg` only, AZ pinned to
+  ap-south-1a, backups + Performance Insights OFF, initial DB name set to match
+  `DATABASE_URL`. ElastiCache: **Node-based cluster** (NOT Serverless — it has a high
+  monthly floor and hides AZ placement), **Cluster cache** creation method (NOT Easy
+  create — that hides the AZ picker), Redis OSS, cache.t4g.micro, 0 replicas,
+  ap-south-1a, encryption-in-transit OFF, backups OFF. SG lives under Advanced settings.
+  (5) ECS cluster (Fargate only, free) + task definition: image
+  `<prod-acct>.dkr.ecr.ap-south-1.amazonaws.com/shortn:m4`,
+  `runtimePlatform.cpuArchitecture = X86_64`, log driver `awslogs`, env for PG/Redis,
+  CPU/mem 0.25 vCPU / 0.5 GB.
   (6) ECS service, desired count 3, in the APP (private) subnets, `assignPublicIp` DISABLED.
   (7) ALB + target group + listener; ALB lives in the WEB (public) subnets, in the SAME two
   AZs as the tasks; the service registers tasks into the target group.
-  (8) THEN the S5 lessons proper, in this order: 503 translation FIRST (firm item, deferred
-  three times) — because a healthy app answering 500 on DB-down is exactly what the health
-  check will have to reason about; then health check pulling a bad task out; then connection
-  draining on a deploy (tag `m4` vs a second tag); then cross-AZ.
-  OPEN, decide at step 5: does the task need a CloudWatch Logs VPC endpoint too? Depends on
-  the log driver chosen for the task definition — a private task with `awslogs` and no route
-  out cannot ship logs.
+  (8) THEN the S5 lessons proper. **ORDER REVISED 09-02** — the 503 translation is not a
+  detour before the lessons, it IS the payload for the draining lesson (see D-log 09-02):
+  deploy `shortn:m4` first → write the 503 branch → build and push `shortn:m4-503` →
+  the rolling deploy that ships it IS the connection-draining exercise. So:
+  503 code change → health check pulling a bad task out → connection draining on the
+  `m4` → `m4-503` deploy → cross-AZ.
   Still carried, not blocking: `bulk_job_items.url NOT NULL` migration; the
   `chunkItems.length` vs insert-count logging audit; creation-write backlog proof;
   08-19 anomaly; fencing-tokens side-read.
+
+Verified this session (2026-09-02) — building it, and the corrections that came out of it:
+  - **THE 2-AZ MINIMUM IS THE ALB'S, NOT FARGATE'S.** I said "Fargate requires at least 2
+    AZs." It doesn't — Fargate will run happily in one subnet in one AZ. It is the ALB that
+    AWS refuses to create with fewer than two subnets in two AZs, because the ALB runs a
+    NODE PER AZ and would otherwise be a single point of failure in front of a multi-AZ
+    backend. Attribution matters: it tells you which resource rejects you and why.
+  - **AN ALB IS NODES, AND DNS IS HOW YOU REACH THEM.** The DNS name resolves to multiple
+    A records, one set per subnet given to it. The client picks. Consequences: never
+    hardcode an ALB's IPs (they change), and the ALB must live in the SAME two AZs as the
+    tasks — an ALB node in an AZ with no tasks makes every request it serves a cross-AZ
+    hop, paid both directions, buying nothing.
+  - **AN AZ IS A BLAST RADIUS, NOT A BOX.** I said "one AZ can have one EC2 instance."
+    Wrong by orders of magnitude — an AZ is one or more datacentres holding tens of
+    thousands of instances. The availability argument survives, but the mechanism is
+    "a power/cooling/network event takes out everything in that building at once," so
+    two AZs halves the blast radius. It is not "one machine each."
+  - **DNS COMES BEFORE ROUTING.** I reached straight for the route table when asked how a
+    container reaches an interface endpoint. Nothing can be routed yet at that point — the
+    container asks for a NAME. The VPC resolver (`.2` of the VPC CIDR) answers, and because
+    the endpoint exists with private DNS enabled, it answers with the endpoint ENI's
+    PRIVATE IP instead of ECR's public one. Only then does routing run, and it is boring:
+    the address is inside my CIDR, so it matches the LOCAL route that is in every route
+    table and cannot be removed. That is the entire reason a private subnet works.
+    Full chain: DNS override → private IP → local route → SG check on the RECEIVER.
+  - **A TASK ENI AND AN ENDPOINT ENI ARE THE SAME KIND OF OBJECT.** Both get a private IP
+    from my CIDR, both wear my SGs, both obey my route tables. The only difference is what
+    sits behind them: my container (which CALLS) vs AWS's service (which ANSWERS). That is
+    also why the rule direction falls out for free — the rule goes on the answerer.
+  - **ENDPOINT OBJECTS ≠ ENDPOINT ENIs, AND BILLING IS PER ENI.** One endpoint object per
+    SERVICE; selecting N subnets puts an ENI in each. 3 interface endpoints × 2 subnets =
+    **6 billable ENIs**, not 3. My 09-01 forecast of ~$0.08 assumed 2. Real shape is
+    ~$0.013/hr × 6 ≈ $0.08/hr ≈ $57/mo if ever forgotten. Correct the forecast at Stage 6.
+  - **GATEWAY vs INTERFACE IS HISTORY, NOT ARCHITECTURE.** I asked why S3 gets a gateway
+    endpoint and ECR doesn't, since both are public AWS services. Honest answer: gateway
+    endpoints shipped in 2015 for S3 and DynamoDB only; interface endpoints (PrivateLink)
+    came later as the general mechanism. S3 supports an interface endpoint TODAY — you
+    could use one, it just bills hourly where the gateway is free. Mechanically the gateway
+    intercepts the PATH (a route to a `pl-` prefix list, more specific than `0.0.0.0/0`)
+    while the interface intercepts the NAME (DNS override). DNS is untouched by a gateway —
+    S3 still resolves to its public IP.
+  - **GATEWAY ENDPOINT TRAFFIC IS FREE.** I assumed a data-transfer fee for moving bytes
+    "out of the VPC to public AWS space." There isn't one: same-region S3 through a gateway
+    endpoint has no processing and no transfer charge, because there is no ENI in the
+    middle metering bytes and the traffic never leaves AWS's network.
+  - **A DB SUBNET GROUP EXISTS FOR FAILOVER, WHICH IS WHY IT NEEDS 2 AZs EVEN FOR A
+    SINGLE-AZ INSTANCE.** It is a pre-authorised list of where RDS may PLACE the database
+    during a failover, maintenance event, or restore. AWS rejects a one-AZ group. The
+    instance still occupies exactly one subnet; the others sit unused as options.
+    ElastiCache keeps its own separate subnet group in its own console.
+  - **RDS MULTI-AZ BUYS AVAILABILITY ONLY.** The standby is not a second endpoint and
+    cannot serve reads — one DNS name, repointed on failover. 2× the cost, 0× the read
+    capacity. Rejected for S5: it doubles the bill and teaches nothing this stage is about.
+    (Multi-AZ vs read replicas is an M6 topic, and they are different things.)
+  - **A ROLLING DEPLOY'S FAILURE MODE IS NOT "SERVER BUSY".** My guess. ECS's default IS
+    rolling (`minimumHealthyPercent` / `maximumPercent`): new tasks come up, pass the target
+    group health check, register, then old ones drain and stop. When it goes wrong you get
+    502s (ALB routing to a task not yet listening) or DROPPED IN-FLIGHT REQUESTS (old task
+    killed mid-response) — not saturation. Different symptoms, different causes.
+    Cost of a deploy: pennies (Fargate briefly runs 4–6 tasks instead of 3); the real cost
+    is ~2–4 min of wall clock per deploy for the pull + health-check grace period.
 
 Verified this session (2026-09-01) — the AWS networking model, before building anything:
   - FARGATE IS AN ENI IN MY SUBNET. The mental swap from EC2: instead of "an instance in a
@@ -322,16 +423,29 @@ CARRIED / DON'T FORGET:
   constant `FROM --platform`, which BuildKit lints and which blocks multi-arch later.
 - NEW (08-27, filed for M9): build images in CI (CodeBuild or GitHub Actions → ECR) so
   the artifact never depends on which laptop ran `docker build`.
-- NEW (09-01), TEARDOWN CHECKLIST ADDITION: **VPC ENDPOINTS are not on the standard 12-line
-  checklist.** Two interface endpoints (ecr.api, ecr.dkr) bill per ENI per hour and will sit
-  there silently after the session. Add a line: "delete VPC endpoints (interface ones bill
-  hourly; the S3 gateway endpoint is free but delete it anyway)". Also add ECS (stop service,
-  delete cluster) — already line 10 of the standard list, but this is the first module that
-  actually uses it.
-- NEW (09-01): step 5 of the build order has an unanswered dependency — a task in a PRIVATE
-  subnet with the `awslogs` driver has no route to CloudWatch Logs. Either add a
-  `com.amazonaws.ap-south-1.logs` interface endpoint (a fourth endpoint, more hourly cost,
-  more teardown) or accept no logs. Decide when writing the task definition, not before.
+- NEW (09-01), TEARDOWN CHECKLIST ADDITION — **AMENDED 09-02, and it WORKED**: **VPC
+  ENDPOINTS are not on the standard 12-line checklist.** It is now THREE interface endpoints
+  (ecr.api, ecr.dkr, logs) × 2 subnets = **6 ENIs billing hourly**, plus the free S3 gateway.
+  Line to add: "delete VPC endpoints — three interface ones (ecr.api, ecr.dkr, logs) bill per
+  ENI per hour; the S3 gateway endpoint is free but delete it anyway". Also add ECS (stop
+  service, delete cluster) — already line 10 of the standard list, but this is the first
+  module that actually uses it. RECEIPT 09-02: tore endpoints down unprompted at session
+  end, which is this note doing its job.
+- ~~NEW (09-01): step 5 of the build order has an unanswered dependency — a task in a
+  PRIVATE subnet with the `awslogs` driver has no route to CloudWatch Logs.~~ —
+  **ANSWERED 2026-09-02: BUILD THE `logs` ENDPOINT.** D-logged. The deciding argument is
+  NOT "to learn endpoints" (a fourth interface endpoint teaches nothing a third didn't) —
+  it is that EVERY step-8 lesson is read out of the app's log output, so no logs makes
+  step 8 unrunnable and makes a failed ECR pull undiagnosable.
+- NEW (09-02): **stopping is not an option for most of this stack.** RDS can be stopped
+  (storage still bills; AWS auto-starts it after 7 days). ElastiCache CANNOT be stopped.
+  VPC endpoints CANNOT be stopped. So "suspend overnight" does not exist — it is ~$0.10/hr
+  (~$2.40/day) to leave S5 up, which is more than the entire curriculum has cost to date.
+  The correct pattern is: delete the billables, KEEP the free objects (SGs, subnet groups,
+  ECS cluster), rebuild in ~20 min next session.
+- NEW (09-02): the ECS **cluster** itself is free and Fargate-only; create it and leave it.
+  Same for both subnet groups and all 5 SGs. Only RDS / ElastiCache / endpoints / ALB /
+  running tasks meter.
 - NEW (09-01): `com.amazonaws.ap-south-1.s3` is a GATEWAY endpoint, not an interface one —
   it attaches to a ROUTE TABLE, has no ENI, no SG, and no hourly charge. It will behave
   differently from the other two in the console and that is expected, not a mistake.
@@ -387,9 +501,17 @@ CARRIED / DON'T FORGET:
   Lesson articulation pending (see Next action).
 - ~~Are RDS / Redis still running in the prod account after M3?~~ **ANSWERED 2026-09-01: NO,
   both torn down.** S5 therefore starts with a re-provisioning detour (build-order step 4).
-- OPEN (09-01): CloudWatch Logs endpoint for private tasks — see CARRIED. Decide at the task
-  definition, not before.
-- 503 translation: **DECIDED 2026-08-27 — S5 item, before the ALB health-check work.**
+- ~~OPEN (09-01): CloudWatch Logs endpoint for private tasks~~ — **ANSWERED 2026-09-02:
+  YES, build it.** Fourth service endpoint, interface type, both app subnets,
+  `shortn-endpoints-sg`. Reason is step 8's runnability, not curiosity. D-logged.
+- 503 translation: **RE-FILED 2026-09-02 — it is the PAYLOAD for the connection-draining
+  lesson, not a separate first item.** The image in ECR (`shortn:m4`, built 08-27) does not
+  contain the branch, and code reaches Fargate only via rebuild → push a new tag → new task
+  definition revision → service update. That sequence IS a rolling deploy, which is exactly
+  the artifact the draining exercise needs. So: deploy `m4`, write the branch, push
+  `m4-503`, and let the redeploy be the lesson. Deferred four times before this; this time
+  it is welded to a lesson that cannot run without it. D-logged.
+  History: **DECIDED 2026-08-27 — S5 item, before the ALB health-check work.**
   History: FILED AS STAGE 5 on 08-26 — but flag this as a judgement call, because
   it is not obviously AWS-native work either. It is one branch in the error middleware
   (`57P01` / `ECONNREFUSED` / `ENOTFOUND` → 503 + `Retry-After`), and it is the SAME SHAPE
@@ -408,7 +530,7 @@ CARRIED / DON'T FORGET:
 | 1 | Single Box | ✅ Done | 2026-04-27 | 2026-04-29 | — |
 | 2 | API Design | ✅ Done | 2026-05-01 | 2026-05-12 | — |
 | 3 | Caching | ✅ Done| 2026-05-12 | 2026-06-11 | — |
-| 4 | Horizontal Scale | 🟡 | 2026-06-11 | — | S3 ✅ closed 07-09; S4 🟡 in progress (guard branch proven 07-20, F-12; cold-start re-audit 08-18 clean, 3 new findings; k6 chunk run DONE 08-21 — 5000ms validated, chunk size 20 unchanged; transient-failed-items fixed 08-24, F-13; creation CTE built + `21000` closed by dedupe + real `23514` receipt 08-26; cardinality receipt paid + cleanup + notes-vs-code drift resolved 08-27, S4 ✅); S5 🟡 started 08-27 (Fargate chosen, amd64 image pushed to ECR in prod; nothing billable running); 09-01 S5 network shape decided end-to-end — ElastiCache over a Redis sidecar, 2 AZs, private subnets + VPC endpoints over NAT/public IPs; RDS + Redis confirmed torn down after M3 so a re-provisioning detour is step 4; still nothing billable; S6/S7 remain |
+| 4 | Horizontal Scale | 🟡 | 2026-06-11 | — | S3 ✅ closed 07-09; S4 🟡 in progress (guard branch proven 07-20, F-12; cold-start re-audit 08-18 clean, 3 new findings; k6 chunk run DONE 08-21 — 5000ms validated, chunk size 20 unchanged; transient-failed-items fixed 08-24, F-13; creation CTE built + `21000` closed by dedupe + real `23514` receipt 08-26; cardinality receipt paid + cleanup + notes-vs-code drift resolved 08-27, S4 ✅); S5 🟡 started 08-27 (Fargate chosen, amd64 image pushed to ECR in prod; nothing billable running); 09-01 S5 network shape decided end-to-end — ElastiCache over a Redis sidecar, 2 AZs, private subnets + VPC endpoints over NAT/public IPs; RDS + Redis confirmed torn down after M3 so a re-provisioning detour is step 4; still nothing billable; 09-02 FIRST BILLABLE S5 SESSION — build-order steps 1–4 done (5 SGs, 2 subnet groups, 4 VPC endpoints, RDS single-AZ, ElastiCache Redis OSS), stopped at 23:30 and tore all billables down (~45 min of runtime, cents expected); steps 5–8 remain; S6/S7 remain |
 | 5 | Async Work | ⬜ | — | — | — |
 | 6 | Data: Replication, Sharding, Migrations | ⬜ | — | — | — |
 | 7 | Auth & Security | ⬜ | — | — | — |
@@ -488,6 +610,10 @@ CARRIED / DON'T FORGET:
 | 2026-09-01 | 4 | Redis for S5 is ELASTICACHE — not a Redis container as a second container in the task definition (sidecar), and not a separate ECS service running the Redis image | a Fargate TASK is the unit that gets replicated, so desired count 3 with a Redis sidecar means THREE Redises, each on its own `localhost`. That is F-09's neighbour wearing a different hat and it re-breaks the exact bug fixed in M4 S0: the rate limiter's state would be per-instance again, allowing 3× the limit, and the cache would be three independent caches. The Redis-as-ECS-service option is NOT wrong for the reason I first gave (desired count 1 is also one shared Redis, no replication, no sync problem) — it is wrong because that single task has no durable storage and no failover, so an ECS restart wipes every rate-limit counter and every cached code at once. That is operating a database by hand inside a compute orchestrator. ElastiCache is the same shape with someone else running it. NOTE: Redis is NOT optional here — the 06-16 decision made the open breaker FAIL CLOSED (`SERVICE_UNAVAILABLE`), so "the app works without Redis" is false as the code stands; no reachable Redis = every redirect 503s | another managed service to provision, pay for, and tear down, on a stage whose actual lesson is ALB + ECS behaviour. Also a per-node-hour charge that runs whether or not a single request arrives |
 | 2026-09-01 | 4 | S5 runs in TWO AZs — not one, not three | 2 is the smallest configuration that can actually SHOW cross-AZ behaviour, which is on the S5 lesson list, AND it is the ALB's own hard minimum (AWS refuses to create one with a single subnet, because the ALB runs a node per AZ and must not itself be a single point of failure). 3 AZs would cost ~50% more on the per-AZ resources (endpoint ENIs, cross-AZ paths), add ~50% more teardown lines, and teach exactly the same concept | RDS lives in ONE AZ, so roughly half the tasks pay a cross-AZ hop on every query, and I am deliberately NOT optimising that away — pinning tasks to the DB's AZ would defeat the point of running in 2 AZs at all. Also: the ALB must be given the WEB subnets in the SAME two AZs as the tasks, or every request crosses an AZ for no benefit — a silent, permanent cost with nothing bought |
 | 2026-09-01 | 4 | Tasks go in PRIVATE (app-tier) subnets with VPC ENDPOINTS for the ECR pull — over (A) public subnets with `assignPublicIp: ENABLED`, and over (B) private subnets with a NAT Gateway | honest why: **A was the better engineering answer for this stage and I chose C anyway, deliberately, to learn endpoints.** A is free, adds zero resources, and is EQUALLY SECURE — a public IP makes a task addressable, not reachable, and the tasks SG allows 3000 from the ALB SG only, so a packet from the internet is dropped. B is the trap: the instinct to go private leads straight to a NAT Gateway at ~$0.045/hr + $0.045/GB (~$32/mo), which is more than the ALB, RDS and ElastiCache COMBINED, and it is the thing most likely to be forgotten at teardown. C keeps the traffic off the internet entirely and costs ~$0.013/hr per interface ENI. I am buying a learning experience for ~$0.08 and saying so out loud rather than pretending it is the cheap option | three endpoints to create instead of one flag, and the failure modes are new to me: miss `ecr.dkr` and the pull dies, miss the S3 GATEWAY endpoint and the pull authenticates then hangs on the first layer (image bytes live in S3; ECR is a metadata front door). Two more hourly-billed ENIs and two more teardown lines that are NOT on my standard checklist. Also an unresolved dependency: a private task with the `awslogs` driver may need a fourth endpoint for CloudWatch Logs. For production the answer stays C; for a learning stage A was defensible and I passed on it |
+| 2026-09-02 | 4 | A FOURTH interface endpoint (`com.amazonaws.ap-south-1.logs`) IS created, so the private tasks can use the `awslogs` driver — over setting the log driver to `none` and running blind | honest why: NOT "to learn endpoints." A fourth interface endpoint is mechanically identical to the third and teaches nothing new — that argument was mine and it was weak. The real reason is that step 8 becomes UNRUNNABLE without logs: the 503 translation, a health check ejecting a bad task, and connections draining mid-deploy are all read out of the app's stdout, and none of them can be observed from the ECS console alone. It also covers the first hurdle of step 5 — a failed image pull shows up as `CannotPullContainerError` plus whatever the agent logged, and without logs that is a guess | 2 more billable ENIs (~$0.03/hr) and 2 more teardown lines, on a stage whose lesson is ALB + ECS. Total endpoint ENIs goes 4 → 6, which is ~$0.08/hr — the endpoints line is now the second-largest in the forecast, not the smallest. Also: this is the SECOND time this stage that "private subnet" has cost real money for a route that a public subnet would have given free (the first being the NAT I correctly refused) |
+| 2026-09-02 | 4 | The 503-translation code change is SHIPPED AS THE PAYLOAD OF THE DRAINING LESSON, not as a separate step-8 item done first — amends the 08-27 / 09-01 ordering | the image sitting in ECR (`shortn:m4`, built 08-27) does not contain the branch, and there is exactly one way for code to reach Fargate: rebuild → push a new tag → register a new task definition revision → update the service. That sequence IS a rolling deploy. Step 8 already listed "connection draining on a deploy (tag `m4` vs a second tag)" as a lesson needing a second tag — so doing 503 first would mean manufacturing a deploy for the lesson AND doing a real one for the fix, twice. Welding them means the fix is the reason for the deploy, and a deferral that has survived four sessions can no longer be deferred without also skipping a lesson | the first deploy of the stage now ships stale code deliberately (`m4` answers 500 on DB-down for the whole health-check exercise), so the health-check lesson runs against the WRONG behaviour first and the 503 lesson has to come before it or be re-run. Accepted: seeing the health check reason about a 500 is itself the motivation for the 503 branch |
+| 2026-09-02 | 4 | RDS for S5 is SINGLE-AZ, and the DB subnet group still spans two AZs | Multi-AZ costs 2× and buys availability ONLY — the standby is not addressable and serves no reads, so read capacity is unchanged and there is nothing new to observe. The stage's lesson is ALB + ECS behaviour; a synchronous standby adds a bill and a failover story that belongs in M6. The subnet group spans 2 AZs anyway because AWS enforces it: the group is a pre-authorisation of where RDS may PLACE the instance on failover/maintenance/restore, so a one-AZ group leaves it nowhere to go and is rejected | RDS in ap-south-1a with tasks across two AZs means a third to a half of tasks pay a cross-AZ hop on every query, changing on every deploy — already accepted on 09-01 as the price of availability, and it is the raw material for the cross-AZ lesson. Also: a single-AZ RDS is a genuine SPOF for the whole stack, so "the app is multi-AZ" would be a lie if I ever wrote it |
+| 2026-09-02 | 4 | ElastiCache engine is REDIS OSS (not Valkey, not Memcached), on a NODE-BASED cluster (not Serverless), created via the "Cluster cache" flow (not "Easy create") | Memcached is disqualified on capability — no `SETNX` semantics, no Lua, no persistence, and the M3 coalescing lock and the M4 rate limiter both depend on Redis primitives. Valkey is wire-compatible and cheaper and AWS pushes it by default, but every M3 measurement (`commandTimeout` 100→500ms calibration, hit-rate, breaker tuning) was taken against Redis — swapping the engine mid-curriculum adds a variable to a stage that is not about caching. Serverless was rejected twice over: a monthly floor far above `cache.t4g.micro`, and it HIDES AZ placement, which is the exact thing this stage needs to observe. "Easy create" was rejected for the same reason — it silently picks the AZ | t4g.micro is Graviton where the 09-01 forecast said t3.micro, so the Stage 6 cost comparison is against a slightly different (cheaper) part than forecast — note it rather than pretend the forecast was exact. Also carrying a Redis engine that AWS is steering away from; revisit at M5/M9 when the cost difference starts to matter |
 
 ---
 
@@ -678,12 +804,19 @@ CARRIED / DON'T FORGET:
 
 **No cost row for 2026-09-01** — planning session, zero resources created, nothing billable.
 
+**COST ROW OUTSTANDING for 2026-09-02** — first billable S5 session. RDS db.t3.micro +
+ElastiCache cache.t4g.micro + 6 interface-endpoint ENIs, all up for roughly 45 minutes, all
+deleted before close. No ALB, no ECS tasks. **PULL THIS FROM COST EXPLORER AND LOG IT AS ITS
+OWN ROW** — a partial-build session with real numbers is the cleanest read available on the
+fixed-cost floor, since nothing served a single request. Expect single-digit cents; if it is
+materially more, something survived the teardown.
+
 **FORECAST ON RECORD for the M4-S5 build session (compare against Cost Explorer at Stage 6):**
 
 | Service | ~3h estimate | Shape |
 |---|---|---|
 | Fargate ×3 @ 0.25 vCPU / 0.5 GB | ~$0.11 | per vCPU-sec + GB-sec, ×3 tasks — scales with desired count |
-| VPC endpoints (2 interface ENIs) | ~$0.08 | per ENI-hour; S3 gateway endpoint is free |
+| VPC endpoints (~~2~~ **6** interface ENIs) | ~~~$0.08~~ **~$0.24** | per ENI-HOUR. **CORRECTED 09-02**: one endpoint OBJECT per service, but an ENI per subnet — 3 services (ecr.api, ecr.dkr, logs) × 2 app subnets = 6 ENIs ≈ $0.08/hr. The original $0.08 assumed 2 ENIs for a 3h session and was wrong twice over. S3 gateway endpoint is still free |
 | ALB | ~$0.07 | FLAT hourly; LCUs round to zero at my traffic |
 | RDS db.t3.micro | ~$0.05 | per instance-hour |
 | ElastiCache cache.t3.micro | ~$0.05 | per node-hour, idle or not |
@@ -692,7 +825,14 @@ CARRIED / DON'T FORGET:
 - MY FIRST GUESS WAS WRONG: I said "RDS first, then ElastiCache," left out the ALB entirely,
   and assumed app→DB traffic crossed the internet and that Fargate billed for a volume. The
   real leader is FARGATE, purely because desired count is 3.
-- SANITY CHECK AT STAGE 6: if the bill is much higher than ~$0.36, the likely culprits are a
+- **REVISED TOTAL 09-02: ~$0.52 for a 3h session, not ~$0.36** — the endpoints line went
+  from $0.08 to $0.24 once the per-ENI-per-subnet shape and the fourth endpoint were counted.
+  ENDPOINTS NOW OUTRANK FARGATE. That inverts the 09-01 headline ("Fargate leads, first time
+  compute tops the bill") — what actually leads is the thing I bought deliberately to learn,
+  and it costs more than the three tasks it exists to serve. Worth sitting with: the whole
+  private-subnet decision (09-01 D-log) was justified against a $32/mo NAT, and the
+  alternative I rejected — public subnets with `assignPublicIp` — remains FREE.
+- SANITY CHECK AT STAGE 6: if the bill is much higher than ~$0.52, the likely culprits are a
   NAT Gateway I created by accident, endpoints left running after teardown, or an ALB left up
   overnight (the flat fee does not care that traffic stopped).
 
@@ -833,4 +973,5 @@ CARRIED / DON'T FORGET:
 | 2026-08-21 | ~3h | M4 S4 🟡 | RAN THE K6 CHUNK LADDER — the blocker from 08-18 is gone and Stage 4's main event is closed. Solved "N concurrent jobs on demand" with k6 `per-vu-iterations` (vus=N, iterations=1) as a starting gun rather than an RPS load test; per-VU unique URLs so jobs don't collide on `ON CONFLICT`. Made the instrumentation permanent: `t0` outside the chunk try, JSON `chunk_ok`/`chunk_fail` lines with duration on BOTH paths (caught a copy-paste where the catch logged `chunk_ok` — a mislabelled line in a failure path that had never run, F-12's cousin). Results 6/12/24 → max 2/4/18ms vs a 5000ms timeout; kept chunk size 20 and the timeout unchanged, and logged WHY sizing up is the wrong search (blast radius, not throughput). Learned the harness lesson the hard way: 6 and 12 jobs produced only ~2 concurrent chunks because a Node instance can only send one query at a time and spends most of its life not-querying — the apps couldn't feed PG hard enough to make it struggle. Traced the 18ms spike to two DIFFERENT instances slowing simultaneously → cause must be the shared thing (PG), attributed to ~1,440 creation-write inserts from the burst. Corrected the 08-18 note claiming `query_timeout` includes pool-wait (it doesn't — the timer arms after `pool.connect` returns). Noticed the inner catch's `status='pending'` predicate is load-bearing against the abandoned-CTE race. 2 D-log rows | the transient-failed-items bug (still un-attacked, now the leading Stage-4 candidate); building the creation transaction; proving rather than inferring the creation-write backlog; the unexplained 08-19 missing-chunk-40 / 37s-gap anomaly; 503 translation; fencing-tokens side-read |
 | 2026-08-24 | ~2h | M4 S4 🟡 | FIXED the transient-failed-items bug (F-13), the leading Stage-4 candidate since 08-18. Killed the timing dependency first: built `FORCE_CHUNK_ERROR=before\|after` (dev-gated, chunk 0, attempt 1) so the branch fires deterministically instead of requiring PG to die and revive inside a millisecond window — reproducing the EFFECT beat reproducing the CAUSE, and the synthetic throw turned out to model the common case (socket reset, timeout trip, failover) better than a docker kill did. `before` run: 20 healthy URLs stamped `failed`, no short codes ever minted, job `partial`, `attempts=1`, `error=NULL` — a job that looks perfectly healthy and lies. `after` run: `chunk_failed` logged at 4ms and 60/60 completed — which RETIRES the 08-21 "load-bearing predicate" claim from reasoned to PROVEN. Fix = classify on `err.code`, permanent swallows and continues, transient rethrows into the outer catch that was already the retry path. Verified both branches + a real `docker stop postgres` (exercised the SLOW lane: outer guard fired, reaper flipped the row, retry completed 60/60). Found `21000` as the allowlist's known omission. Amended 07-02: the CTE worker is the default, and had been for 7 weeks without a decision | building the creation transaction (decided 08-18, STILL not built); 503 translation; the real `23505` receipt; the `21000` gap; proving rather than inferring the 08-21 creation-write backlog; the unexplained 08-19 missing-chunk-40 anomaly; fencing-tokens side-read |
 | 2026-08-26 | ~2h | M4 S4 🟡 | CLOSED the two oldest open items plus a carried receipt. CREATION TRANSACTION built — and built BETTER than decided: realised a data-modifying CTE makes it ONE STATEMENT, so implicit-transaction atomicity is free and 07-07's no-pinned-client rule survives; amends 08-18. Caught the hole the transaction alone does NOT close — an empty array is a LEGAL statement that commits a job row and inserts no items, so PG rolls back nothing and the 08-18 orphan walks back in through a success rather than a throw; fixed with `WHERE cardinality > 0`, and defended it against my own F-12 rule by separating a dead HANDLER (observes corruption, rots) from a dead CONSTRAINT (evaluated on every write, always true). `21000` CLOSED by chunk-time `DISTINCT ON` over a multi-arg `unnest` — chose removing the condition over extending the allowlist, and chunk-time over creation-time to keep 60-in/60-out. Real `23xxx` receipt CLOSED for free while testing: a `null` in the array produced a genuine `23514 check_url_format` from PG, permanent branch stamped and `continue`d, chunks 20 and 40 ran after it — which also DEMONSTRATED (not asserted) why `continue` beats blanket un-fail-on-retry: one bad chunk must not head-of-line-block the rest. Found `bulk_job_items.url` is nullable. 3 D-log rows | THE CARDINALITY RECEIPT — `cardinality > 0` has never executed, so the creation fix is built-and-reasoned, NOT proven, and I nearly wrote "proven" in this file (the exact F-12 sentence). The two cleanup items (`premanentErrors` typo, shadowed `error`). The `chunkItems.length` vs insert-count audit. 503 translation (filed to S5, arguably dodged). Proving rather than inferring the 08-21 creation-write backlog; the 08-19 missing-chunk-40 anomaly; fencing-tokens side-read |
-| 2026-08-27 | ~2.5h | M4 S4 ✅ CLOSED → S5 🟡 | PAID THE CARDINALITY RECEIPT: validator relaxed, POST `[]`, TypeError in the controller catch (expected either way) and `bulk_jobs` count unchanged (the real proof — the Node symptom is identical with or without the predicate). Validator restored; explicit throw added for the no-job-id case. Cleanup: both shadowed catch params renamed, `premanentErrors` log deleted. Traced the shadowing first — block-scoped catch params meant `throw error` already threw the original; hygiene, not a fix. Found notes-vs-code drift on the permanent branch (notes: swallow a failed stamp and continue; code: rethrow) and kept the CODE — a failed stamp is a plumbing failure, the items are still pending, the retry re-stamps; amended 08-24 row and F-13. ARTICULATED THE S4 LESSON (branches were assumed, not covered; a green test can pass for a reason unrelated to correctness — go into the branch and force it). STARTED S5: chose Fargate over ASG (D-logged, reasoning not experience); found the image was arm64 vs Fargate's X86_64 default; rebuilt for amd64 and the cache-masked pnpm failure surfaced (pnpm 10 blocked-scripts rule + unpinned pnpm 11 in the image) — pinned `pnpm@10.32.0`, allowlisted esbuild; pushed `shortn:m4` to ECR in prod via assumed-role profile. Nothing billable running | 503 translation — deferred a THIRD time, now a firm S5 item before the health-check work; answering whether RDS/Redis still exist in prod; the 3 chained SGs + cluster + task def + service + ALB; `bulk_job_items.url NOT NULL` migration; the `chunkItems.length` vs insert-count logging audit; creation-write backlog proof; 08-19 anomaly; fencing-tokens side-read || 2026-09-01 | ~1h | M4 S5 🟡 | PLANNING ONLY — nothing provisioned, nothing billable. Answered the 08-27 blocker: RDS and ElastiCache were both torn down after M3, so S5 opens with a re-provisioning detour. Decided the whole S5 network shape before touching the console (3 D-log rows): (1) ElastiCache over a Redis SIDECAR — desired count 3 with a sidecar = three Redises on three `localhost`s, which re-breaks the per-instance-state bug fixed in M4 S0 and would let the rate limiter allow 3× the limit; also corrected my own reasoning that a single Redis ECS service "replicates" (it doesn't — the real objection is no durability, no failover). Noted Redis is NOT optional because the 06-16 breaker decision is fail-CLOSED. (2) 2 AZs — the ALB's hard minimum and the smallest config that actually shows cross-AZ behaviour; 3 buys the same lesson at +50% cost and teardown. (3) Private subnets + VPC endpoints over public-IP tasks and over a NAT Gateway — logged honestly that the public-IP option was FREE and EQUALLY SECURE and I chose endpoints anyway to learn them for ~$0.08. Learned the Fargate model (a task is an ENI in my subnet, not an instance), why the ECR pull is an outbound call made by the ECS agent through my ENI, and the correction that matters most: PUBLIC SUBNET ≠ PUBLICLY ACCESSIBLE — routing is the route table's job, reachability is the SG's, and conflating them is how people buy a $32/mo NAT they don't need. Also got the SG rule direction wrong twice (said "allow from the endpoint" and "source = ephemeral port") and re-derived that a rule's source is the CALLER, since SGs are stateful. Corrected the cost model: nothing goes over the internet inside the VPC, ALB is a FLAT hourly fee not per-request (Route 53 lesson, second time), Fargate has no volume — and put a forecast on record with Fargate leading at ~$0.11/3h | THE ENTIRE BUILD — endpoints, 4 SGs, RDS + ElastiCache re-provision, cluster, task def, service, ALB. 503 translation (deferred a FOURTH time, now first item after the plumbing). The CloudWatch Logs endpoint question. `bulk_job_items.url NOT NULL` migration; the `chunkItems.length` vs insert-count logging audit; creation-write backlog proof; 08-19 anomaly; fencing-tokens side-read |
+| 2026-08-27 | ~2.5h | M4 S4 ✅ CLOSED → S5 🟡 | PAID THE CARDINALITY RECEIPT: validator relaxed, POST `[]`, TypeError in the controller catch (expected either way) and `bulk_jobs` count unchanged (the real proof — the Node symptom is identical with or without the predicate). Validator restored; explicit throw added for the no-job-id case. Cleanup: both shadowed catch params renamed, `premanentErrors` log deleted. Traced the shadowing first — block-scoped catch params meant `throw error` already threw the original; hygiene, not a fix. Found notes-vs-code drift on the permanent branch (notes: swallow a failed stamp and continue; code: rethrow) and kept the CODE — a failed stamp is a plumbing failure, the items are still pending, the retry re-stamps; amended 08-24 row and F-13. ARTICULATED THE S4 LESSON (branches were assumed, not covered; a green test can pass for a reason unrelated to correctness — go into the branch and force it). STARTED S5: chose Fargate over ASG (D-logged, reasoning not experience); found the image was arm64 vs Fargate's X86_64 default; rebuilt for amd64 and the cache-masked pnpm failure surfaced (pnpm 10 blocked-scripts rule + unpinned pnpm 11 in the image) — pinned `pnpm@10.32.0`, allowlisted esbuild; pushed `shortn:m4` to ECR in prod via assumed-role profile. Nothing billable running | 503 translation — deferred a THIRD time, now a firm S5 item before the health-check work; answering whether RDS/Redis still exist in prod; the 3 chained SGs + cluster + task def + service + ALB; `bulk_job_items.url NOT NULL` migration; the `chunkItems.length` vs insert-count logging audit; creation-write backlog proof; 08-19 anomaly; fencing-tokens side-read |
+| 2026-09-01 | ~1h | M4 S5 🟡 | PLANNING ONLY — nothing provisioned, nothing billable. Answered the 08-27 blocker: RDS and ElastiCache were both torn down after M3, so S5 opens with a re-provisioning detour. Decided the whole S5 network shape before touching the console (3 D-log rows): (1) ElastiCache over a Redis SIDECAR — desired count 3 with a sidecar = three Redises on three `localhost`s, which re-breaks the per-instance-state bug fixed in M4 S0 and would let the rate limiter allow 3× the limit; also corrected my own reasoning that a single Redis ECS service "replicates" (it doesn't — the real objection is no durability, no failover). Noted Redis is NOT optional because the 06-16 breaker decision is fail-CLOSED. (2) 2 AZs — the ALB's hard minimum and the smallest config that actually shows cross-AZ behaviour; 3 buys the same lesson at +50% cost and teardown. (3) Private subnets + VPC endpoints over public-IP tasks and over a NAT Gateway — logged honestly that the public-IP option was FREE and EQUALLY SECURE and I chose endpoints anyway to learn them for ~$0.08. Learned the Fargate model (a task is an ENI in my subnet, not an instance), why the ECR pull is an outbound call made by the ECS agent through my ENI, and the correction that matters most: PUBLIC SUBNET ≠ PUBLICLY ACCESSIBLE — routing is the route table's job, reachability is the SG's, and conflating them is how people buy a $32/mo NAT they don't need. Also got the SG rule direction wrong twice (said "allow from the endpoint" and "source = ephemeral port") and re-derived that a rule's source is the CALLER, since SGs are stateful. Corrected the cost model: nothing goes over the internet inside the VPC, ALB is a FLAT hourly fee not per-request (Route 53 lesson, second time), Fargate has no volume — and put a forecast on record with Fargate leading at ~$0.11/3h | THE ENTIRE BUILD — endpoints, 4 SGs, RDS + ElastiCache re-provision, cluster, task def, service, ALB. 503 translation (deferred a FOURTH time, now first item after the plumbing). The CloudWatch Logs endpoint question. `bulk_job_items.url NOT NULL` migration; the `chunkItems.length` vs insert-count logging audit; creation-write backlog proof; 08-19 anomaly; fencing-tokens side-read || 2026-09-02 | ~2h | M4 S5 🟡 | FIRST BILLABLE SESSION OF THE CURRICULUM'S BIGGEST BUILD — steps 1–4 of the 7-step plumbing order, then a deliberate stop at 23:30 and a full teardown rather than a rushed step 5–8 at midnight. Built: 5 chained SGs (learned the ordering constraint the hard way — `tasks-sg` must exist as an empty shell before `endpoints-sg`, which must exist before the endpoints themselves), 3 interface endpoints + 1 S3 gateway, 2 subnet groups, RDS single-AZ, ElastiCache Redis OSS. CAUGHT MY OWN SUBNET BUG mid-build: the first endpoint went into DB subnets instead of APP subnets, spotted only because one db subnet ID appeared in BOTH the endpoint config and the cache subnet group — the console gives no hint, the IDs are indistinguishable, and a wrong-tier endpoint would have "worked" while making the tier boundary meaningless. Corrected FOUR of my own wrong statements: (1) the 2-AZ minimum is the ALB's, not Fargate's; (2) an AZ is a blast radius, not "one instance"; (3) DNS resolves BEFORE routing — I jumped straight to route tables when asked how a container finds an endpoint; (4) gateway-endpoint traffic is FREE, I had assumed a transfer fee. Learned the endpoint/ENI billing shape (one object per SERVICE, one ENI per SUBNET → 6 ENIs, not 3) which triples the forecast line and makes ENDPOINTS OUTRANK FARGATE — inverting the 09-01 headline. Also learned that gateway-vs-interface is a 2015 historical accident, not a design principle. 4 D-log rows: the `logs` endpoint (built for step 8's runnability, NOT to "learn endpoints" — I caught myself giving the weak reason), the 503 change re-filed as the draining lesson's payload rather than a separate item, single-AZ RDS, and Redis OSS on a node-based cluster (Serverless and Easy-create both rejected for hiding AZ placement). Teardown ran unprompted — the 09-01 checklist addition doing its job | THE ACTUAL STAGE — cluster, task def, service, ALB, and every step-8 lesson. The 503 translation (deferred a FIFTH time, but now structurally welded to the draining lesson). Rebuilding steps 1–4 (~20 min). Logging the 09-02 cost row. `bulk_job_items.url NOT NULL` migration; the `chunkItems.length` vs insert-count logging audit; creation-write backlog proof; 08-19 anomaly; fencing-tokens side-read |
