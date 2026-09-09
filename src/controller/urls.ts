@@ -96,6 +96,7 @@ export async function redirectToOriginalUrl(
         new AppError("Service unavailable", 503, "SERVICE_UNAVAILABLE"),
       );
     }
+    logger(`Redirecting to original URL: ${result.result}`);
     res.status(302).redirect(result.result);
   } catch (err) {
     console.error("Error retrieving URL:", err);

@@ -9,7 +9,8 @@
     "build": "tsc",
     "start": "node --env-file=.env.production dist/server.js",
     "k6": "k6 run -e BASE_URL=http://localhost:3000 load/k6/m1-baseline.js",
-    "k6-batch": "k6 run -e BASE_URL=http://localhost:3000 load/k6/m2-batch.js"
+    "k6-batch": "k6 run -e BASE_URL=http://localhost:3000 load/k6/m2-batch.js",
+    "docker:build": "docker buildx build --platform linux/amd64 -t 827046730726.dkr.ecr.ap-south-1.amazonaws.com/shortn:m4 --push ."
   },
   "engines": {
     "node": ">=20"

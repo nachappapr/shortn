@@ -6,7 +6,7 @@ CREATE TABLE bulk_job_items(
     status job_result_status NOT NULL DEFAULT 'pending',
     error TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-)
+);
 
 CREATE INDEX idx_items_resume ON bulk_job_items (job_id) WHERE status = 'pending';
 

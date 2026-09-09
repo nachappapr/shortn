@@ -42,3 +42,5 @@ load/k6/results/
 dist/
 build/
 coverage/
+
+aws-commands/

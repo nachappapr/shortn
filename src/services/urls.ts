@@ -122,7 +122,7 @@ export async function fetchOriginalUrl(
     return onRedisUnavailable(shortCode, circuitOpen);
 
   if (cached) {
-    console.info(`Cache hit for code: ${shortCode}`);
+    logger(`Cache hit for code: ${shortCode}`);
     return { result: cached, error_type: null };
   }
 

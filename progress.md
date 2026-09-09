@@ -1,6 +1,35 @@
 ## Current Position
 Current Position: Module 4, Stage 5 — STARTED 2026-08-27 (Fargate path). Stage 4 CLOSED
   2026-08-27, lesson articulated (see S4 LESSON below).
+  Session 09-09 — MIGRATIONS GAP CLOSED, FULL PATH PROVEN. Rebuilt steps 1–7 (all four
+  endpoints this time). Ran migrations as a ONE-OFF ECS TASK (`run-task`, same task def,
+  one app subnet, `shortn-tasks-sg`, command overridden to `node dist/migrate.js`).
+  Receipts, in order: `/health` → 200; `POST /v1/shorten` → 201 with a code;
+  `GET /v1/<code>` → 302 twice; logs show the MISS on task `3049f…` and the HIT on a
+  DIFFERENT task `769ce…` — three tasks, one ElastiCache, the 09-01 sidecar decision
+  proven by the stream names, not by "the second curl was fast".
+  MIGRATION RUNNER (new, `src/migrate.ts`): the old `infra/migrate.sh` needed `bash` and
+  `psql`, and `node:20-alpine` has neither (`which bash; which psql` → empty). Chose a Node
+  runner over `apk add postgresql-client bash` — D-logged. Runner bootstraps a `migrations`
+  table (`CREATE TABLE IF NOT EXISTS`), reads applied filenames into a Set, skips those,
+  and wraps each new file + its bookkeeping INSERT in one BEGIN/COMMIT so "ran but not
+  recorded" cannot happen. Three bugs caught in review BEFORE the first run: (1) inner
+  catch did ROLLBACK and swallowed → loop continued, exit code 0 on failure — fixed with
+  `throw` + `process.exit(1)`; (2) `path.join(__dirname, "migrations")` resolved to
+  `/app/dist/migrations`, which does not exist — fixed with `process.cwd()`; (3) a stray
+  duplicate "Executed" log after the `finally`. Run 1: exit 1 — 0001–0007 applied, 0008
+  died on a missing `;` (a multi-statement file sent as ONE string via `client.query`,
+  where `psql` had been splitting statements for it). Run 2: exit 0 — seven "Skipping"
+  lines, then 0008 and 0009 applied. The failed run is a free receipt for the transaction:
+  0008 rolled back cleanly and re-applied. Runner's failure log did not name the FILE —
+  added.
+  DRIFT FOUND (4th this month): Dockerfile STILL had `FROM --platform=linux/amd64` on
+  09-09, despite F-14 saying it was removed 09-03. Removed for real; `"docker:build"`
+  committed to `package.json`; `manifest inspect` → `amd64`. F-14 amended.
+  STEP 8 NOT STARTED. Stopped on purpose: the break-it plan gets written out in full
+  BEFORE the next session touches anything — no more chunk-by-chunk into a lesson.
+  TEARDOWN 09-09: <<FILL — confirm: service force-deleted, ALB, RDS, ElastiCache, all 4
+  endpoints. Kept: cluster, task def, `shortn-tg`, 5 SGs, 2 subnet groups, log group>>
   Session 09-03 — STEPS 5–7 BUILT AND VERIFIED. `shortn:m4` running as 3 Fargate tasks in
   the APP subnets, all 3 HEALTHY in `shortn-tg` behind `shortn-alb`, `/health` → 200 through
   the ALB DNS name. Stopped ~00:30 (past the 09-02 rule, noted) on the MIGRATIONS GAP:
@@ -89,28 +118,34 @@ Current Position: Module 4, Stage 5 — STARTED 2026-08-27 (Fargate path). Stage
   classifier; 08-21 k6 chunk ladder (5000ms validated, chunk 20).
 Module: Module 4
 Stage: 5 (AWS-native: ALB + ECS Fargate) 🟡
-Last session: 2026-09-03 (steps 5–7 built, 3 healthy targets, torn down; migrations gap
-  found; step 8 remains)
+Last session: 2026-09-09 (migrations run as a one-off task; POST 201, GET 302, cache hit
+  across tasks proven; torn down; step 8 remains — plan first)
 
-**COLD-START QUESTION FOR NEXT SESSION — answer this BEFORE opening the console:**
-  *(a) Who pulls the image and who ships the logs — which IAM role is that, and why is it
-  not the task role? (b) Migrations: the RDS is reachable only from inside the VPC. Name
-  three ways to run them against it and pick one — with the tradeoff — before building
-  anything.* Same ritual as 08-18 and 09-03: read the notes against reality first. 09-03
-  found THREE places the notes were wrong (image label, endpoint count, "rebuilt 1–4").
+**COLD-START FOR NEXT SESSION — do this BEFORE opening the console:**
+  *Write the step-8 plan in full, as a list of "break X → expect Y → read it from Z".
+  For each of the four lessons (503 branch, health check ejecting a bad task, draining
+  on the `m4` → `m4-503` deploy, cross-AZ): what do I break, what do I expect to see,
+  which log line / target-group state / curl output is the receipt.* Then read the notes
+  against the code again — 09-09 found the Dockerfile still carrying the F-14 line six
+  days after the notes said it was gone. Four drifts in one month.
 
 Next action:
-  (0) DECIDE how migrations reach a private RDS. Options on the table: a ONE-OFF ECS TASK
-      (same task def / network / SGs, command overridden to run `migrate`); RUN-ON-BOOT
-      (rejected-ish — 3 tasks race the same migration on every deploy); a BASTION or SSM
-      session. Pick, D-log, then build it.
-  (1) REBUILD steps 1–4 AND 5–7 (~30 min total; every decision is made — see the 09-02 and
-      09-03 blocks). Count the endpoints: FOUR. Verify each interface endpoint's Subnets tab.
-  (2) Migrate. Then the receipts: `/health` → 200, `POST /v1/shorten` → 201, `GET /<code>`
-      twice (second is the cache hit — read it in `/ecs/shortn`).
-  (3) STEP 8 — the actual Stage 5 lessons. Order unchanged from 09-02:
-      503 code change → health check pulling a bad task out → connection draining on the
-      `m4` → `m4-503` deploy → cross-AZ.
+  (0) THE STEP-8 PLAN, on paper, before anything billable exists. See cold-start above.
+  (1) Code for the `m4-503` tag (NOT rebuilt into `m4` — the deploy IS the draining
+      lesson): the 503 branch in the error middleware (`57P01` / `ECONNREFUSED` /
+      `ENOTFOUND` → 503 + `Retry-After`); cache-hit log switched from `console.info` to
+      `logger` (done in the working tree, NOT in any pushed image); drop the
+      `Health check endpoint hit` line; add a `redirect` line with `source: cache|db`
+      and `durationMs`. Build, push as `m4-503`, `manifest inspect`, register task def
+      rev 2 — do NOT update the service yet.
+  (2) REBUILD steps 1–7 (~30 min). Count the endpoints: FOUR. Run the migrate task
+      (expect exit 0, nine "Skipping" lines — that IS the receipt the runner is idempotent).
+  (3) STEP 8, in the order the plan says. Baseline order from 09-02:
+      health check pulling a bad task out (against `m4`, 500 behaviour) → deploy `m4-503`
+      = connection draining → re-run health check against 503 behaviour → cross-AZ.
+  ~~(0) DECIDE how migrations reach a private RDS~~ — DECIDED + BUILT + PROVEN 09-09:
+      one-off ECS task. D-logged.
+  ~~(2) Migrate. Then the receipts~~ — ALL PAID 09-09.
   Steps 1–4 ✅ DONE 09-02, steps 5–7 ✅ DONE 09-03 — the numbered lines below are kept as
   the build reference, not as a to-do list.
   (1) ✅ DONE 09-02 — AZs are **ap-south-1a + ap-south-1c** for web / app / db. Use these
@@ -169,6 +204,53 @@ Next action:
   Still carried, not blocking: `bulk_job_items.url NOT NULL` migration; the
   `chunkItems.length` vs insert-count logging audit; creation-write backlog proof;
   08-19 anomaly; fencing-tokens side-read.
+
+Verified this session (2026-09-09) — migrations, and what the runner taught me:
+  - **A ONE-OFF TASK IS `docker run <image> <other-command>` WITH ECS'S NETWORK.**
+    `run-task` + `containerOverrides.command` swaps the entrypoint; everything else — image,
+    subnet, SG, execution role, log group — is the task definition's. It exits when the
+    command exits and belongs to no service, so nothing restarts it. Nothing new had to be
+    built to reach the private RDS; the migrate task simply wears `shortn-tasks-sg`.
+  - **THE MIGRATION ENDPOINT IDEA FAILS ON ONE PACKET WALK:** internet-facing ALB, 80 from
+    `0.0.0.0/0`, no auth until M7 → `POST /migrate` is "anyone can run DDL on prod". It is
+    also fused to the app image: the code that needs the schema deploys BEFORE anything
+    can call the endpoint — the wrong order, the one M6 expand-contract exists to prevent.
+  - **THE BASTION OBJECTION IS NOT "SCALE".** Bastions are for humans; few admins with keys
+    is the point. The real costs: a new billable, a SECOND path into the DB (a new SG rule
+    that did not exist before), a new teardown line.
+  - **WHAT THE ONE-OFF TASK COSTS:** (1) a human presses the button — nothing ties "run
+    migrate" to "update service", so the 09-03 500 is one tired night away; CI runs both
+    in sequence (M9). (2) It runs while 3 OLD tasks are still serving, so every migration
+    must be safe for the old code — additive only. I have committed to expand-contract as a
+    rule before doing M6. The deferred `bulk_job_results` DROP is the first thing it bites.
+  - **THE RUNNER'S EXIT CODE IS THE RECEIPT, SO A SWALLOWED CATCH LIES.** First draft did
+    ROLLBACK and continued: a failed 0003 would report exit 0 and ECS would show "succeeded"
+    over a broken schema. Same disease as F-12/F-13 — a verdict that does not come from
+    what happened.
+  - **THE RECORD OF WHAT CHANGED THE DB LIVES IN THE DB.** A file in the container dies
+    with the container; the second migrate task starts from a fresh image. Same rule as
+    `bulk_job_items` in S3: durable state outlives the process that wrote it. File + its
+    bookkeeping row in ONE transaction, or a crash between them makes the next run fail on
+    a migration that already ran (08-18 orphan shape, one layer down). Works because PG DDL
+    is transactional — on MySQL this design is wrong.
+  - **`client.query(wholeFile)` IS NOT `psql -f`.** psql splits on `;` and sends statements
+    one at a time; `pg` sends the file as a single string. A missing semicolon that psql
+    had been quietly tolerating became `syntax error at or near "CREATE"`. Migrations that
+    "worked" in M2 S5 had never been parsed as one unit.
+  - **PROD IMAGE CARRIES WHAT THE SERVER NEEDS AND NOTHING ELSE.** Rejected `apk add bash
+    postgresql-client`: a second Postgres client plus a shell, ~30 MB, for a job the `pg`
+    already in the image can do.
+  - **A HIT ONLY PROVES SHARING IF IT LANDS ON A DIFFERENT TASK.** Miss on stream `3049f…`,
+    hit on stream `769ce…`. Same task would have proven nothing about topology. The
+    console.info hit line had no `instanceId` — it is exactly the line step 8 needs, and it
+    was the one line not searchable.
+  - **STEP 8 IS BLIND WITHOUT A PER-REDIRECT LOG LINE.** You cannot see inside the ALB; the
+    only way to know which task answered is if the task writes it down. Redirect path
+    logged nothing at all on the hit (no instanceId), and the health-check line was 18
+    lines/min of noise hiding that fact.
+  - **PROCESS LESSON (mine, not the code's):** running into a lesson chunk-by-chunk with no
+    written plan produced "wait, why are we doing this?" three times in one hour. Next
+    session opens with the plan on paper.
 
 Verified this session (2026-09-03) — steps 5–7, and what the console taught me:
   - **THE ECS AGENT PULLS THE IMAGE AND SHIPS THE LOGS, SO BOTH LIVE ON THE EXECUTION
@@ -524,12 +606,27 @@ CARRIED / DON'T FORGET:
 - 503-vs-500 translation for DB-down errors deferred (one branch in the
   error middleware: 57P01/ECONNREFUSED/ENOTFOUND → 503 + Retry-After).
   **DEFERRED AGAIN 2026-08-27 → firm S5 item, do before the ALB health-check exercise.**
-- ~~NEW (08-27): pin the image platform in a committed build script~~ — **THE COMMAND WAS
-  RUN 09-03** (`docker buildx build --platform linux/amd64 -t <registry>/shortn:m4 --push .`,
-  `FROM --platform` removed) and it fixed F-14. **STILL NOT COMMITTED as `"docker:build"` in
-  `package.json`** — do that before the `m4-503` build, or the next tag repeats F-14. Also:
-  after EVERY push, `docker manifest inspect` and read the platform. The 08-27 note said
-  "amd64 pushed" for a week and nothing checked.
+- ~~NEW (08-27): pin the image platform in a committed build script~~ — **DONE 09-09.**
+  `"docker:build"` committed in `package.json`; `FROM --platform` ACTUALLY removed from the
+  Dockerfile (the 09-03 note claiming it was removed was WRONG — it was still there on
+  09-09). `manifest inspect` → `amd64` after the push. Still do the manifest check after
+  EVERY push; add it to the script itself when convenient.
+- NEW (09-09): `shorten_url` in the POST response says `http://localhost:3000/<code>`. The
+  base URL is baked from local config; behind the ALB it should be the ALB DNS name (env
+  var, not code). Also the response omits `/v1`, but the redirect route is mounted at
+  `/v1/:code` — so the response points at a path that 404s. A shortener whose short URL is
+  `/v1/<code>` is not short either. Product/routing question; not an S5 lesson.
+- NEW (09-09): cache-hit log in `fetchOriginalUrl` was `console.info`, not `logger` — no
+  instanceId, no requestId, not JSON. Switched in the working tree; NOT in any pushed image
+  until `m4-503`. Redirect path also needs one JSON `redirect` line with `source` and
+  `durationMs` — every step-8 lesson is read off that line.
+- NEW (09-09): migrate runner logs the failing FILE now (first run only said "syntax error
+  at or near CREATE"). Also: the runner uses the app's `pool`, which has `query_timeout:
+  5000` — a long backfill migration (the 06-30 shape) would trip it. Use a bare `Client`
+  or override the timeout for the runner when that day comes.
+- NEW (09-09): `migrations` table (id, filename UNIQUE, applied_at) now exists in prod RDS.
+  It is bootstrapped by the runner with `IF NOT EXISTS`, so a fresh RDS needs nothing by
+  hand. Nine files applied as of 09-09.
 - NEW (09-03, M7): the DB password is PLAINTEXT in the task definition env. Every revision is
   immutable and kept forever; anyone with `ecs:DescribeTaskDefinition` reads it; rotating
   means a new revision + redeploy so nobody rotates. Fix = `secrets` block with `valueFrom`
@@ -624,15 +721,14 @@ CARRIED / DON'T FORGET:
   the wrong number quietly.
 
 **Open questions / things I'm stuck on:**
-- **OPEN (09-03), BLOCKS STEP 8: how do migrations reach the RDS?** It is `public access
-  NO` in the db subnets, `shortn-data-sg` allows 5432 from `shortn-tasks-sg` only — so
-  today the ONLY thing that can open a connection is a Fargate task wearing the tasks SG.
-  Candidates: (a) one-off ECS task, same task def, container command overridden to the
-  migrate script — reuses every network decision already made, costs one task-minute;
-  (b) migrate on container boot — 3 tasks race the same DDL on every deploy, and a deploy
-  is the exact moment I do NOT want schema changes racing (M6 expand-contract); (c) a
-  bastion/SSM session in the app subnet — a new billable, a new SG rule, a new teardown
-  line. Decide first thing next session; D-log it.
+- ~~**OPEN (09-03), BLOCKS STEP 8: how do migrations reach the RDS?**~~ — **ANSWERED,
+  BUILT AND PROVEN 2026-09-09: (a) one-off ECS task.** `run-task` with the command
+  overridden to `node dist/migrate.js`. Honest note: on 09-09 I had forgotten this option
+  existed even though it was written here as candidate (a) — the cold-start ritual caught
+  it. Also learned the fourth option I had not listed, a `POST /migrate` endpoint, and why
+  it is wrong (open to the internet; fused to the app image; wrong deploy order). D-logged
+  with both tradeoffs (human presses the button; migrations must be old-code-safe).
+- **OPEN (09-09): the step-8 plan is not written.** Blocks the next session by my own rule.
 - Known gap (scale, deferred): N dispatcher pollers race per tick → M5 (SKIP LOCKED).
 - Known gap: 30s max request origin unconfirmed — carried from M3.
 - ~~Is Stage 4 done?~~ Stage 4 DONE 2026-08-27 — cardinality receipt paid, cleanup done.
@@ -668,7 +764,7 @@ CARRIED / DON'T FORGET:
 | 1 | Single Box | ✅ Done | 2026-04-27 | 2026-04-29 | — |
 | 2 | API Design | ✅ Done | 2026-05-01 | 2026-05-12 | — |
 | 3 | Caching | ✅ Done| 2026-05-12 | 2026-06-11 | — |
-| 4 | Horizontal Scale | 🟡 | 2026-06-11 | — | S3 ✅ closed 07-09; S4 🟡 in progress (guard branch proven 07-20, F-12; cold-start re-audit 08-18 clean, 3 new findings; k6 chunk run DONE 08-21 — 5000ms validated, chunk size 20 unchanged; transient-failed-items fixed 08-24, F-13; creation CTE built + `21000` closed by dedupe + real `23514` receipt 08-26; cardinality receipt paid + cleanup + notes-vs-code drift resolved 08-27, S4 ✅); S5 🟡 started 08-27 (Fargate chosen, amd64 image pushed to ECR in prod; nothing billable running); 09-01 S5 network shape decided end-to-end — ElastiCache over a Redis sidecar, 2 AZs, private subnets + VPC endpoints over NAT/public IPs; RDS + Redis confirmed torn down after M3 so a re-provisioning detour is step 4; still nothing billable; 09-02 FIRST BILLABLE S5 SESSION — build-order steps 1–4 done (5 SGs, 2 subnet groups, 4 VPC endpoints, RDS single-AZ, ElastiCache Redis OSS), stopped at 23:30 and tore all billables down (~45 min of runtime, cents expected); 09-03 steps 5–7 built — cluster, task def, target group, ALB, service — 3 healthy targets, `/health` 200 through the ALB; two predicted failures fixed (F-14 image platform label, F-15 missing `logs` endpoint); stopped ~00:30 on the migrations gap (fresh RDS, no schema, POST → 500); torn down; step 8 remains; S6/S7 remain |
+| 4 | Horizontal Scale | 🟡 | 2026-06-11 | — | S3 ✅ closed 07-09; S4 🟡 in progress (guard branch proven 07-20, F-12; cold-start re-audit 08-18 clean, 3 new findings; k6 chunk run DONE 08-21 — 5000ms validated, chunk size 20 unchanged; transient-failed-items fixed 08-24, F-13; creation CTE built + `21000` closed by dedupe + real `23514` receipt 08-26; cardinality receipt paid + cleanup + notes-vs-code drift resolved 08-27, S4 ✅); S5 🟡 started 08-27 (Fargate chosen, amd64 image pushed to ECR in prod; nothing billable running); 09-01 S5 network shape decided end-to-end — ElastiCache over a Redis sidecar, 2 AZs, private subnets + VPC endpoints over NAT/public IPs; RDS + Redis confirmed torn down after M3 so a re-provisioning detour is step 4; still nothing billable; 09-02 FIRST BILLABLE S5 SESSION — build-order steps 1–4 done (5 SGs, 2 subnet groups, 4 VPC endpoints, RDS single-AZ, ElastiCache Redis OSS), stopped at 23:30 and tore all billables down (~45 min of runtime, cents expected); 09-03 steps 5–7 built — cluster, task def, target group, ALB, service — 3 healthy targets, `/health` 200 through the ALB; two predicted failures fixed (F-14 image platform label, F-15 missing `logs` endpoint); stopped ~00:30 on the migrations gap (fresh RDS, no schema, POST → 500); torn down; 09-09 migrations run as a ONE-OFF ECS TASK with a new Node runner (`migrations` bookkeeping table, per-file transaction, honest exit code) — 9 files applied, second run skipped all 9; `POST` → 201, `GET /v1/<code>` → 302, cache hit proven on a different task than the miss; Dockerfile drift fixed for real + `docker:build` committed; torn down; step 8 remains, plan first; S6/S7 remain |
 | 5 | Async Work | ⬜ | — | — | — |
 | 6 | Data: Replication, Sharding, Migrations | ⬜ | — | — | — |
 | 7 | Auth & Security | ⬜ | — | — | — |
@@ -754,6 +850,8 @@ CARRIED / DON'T FORGET:
 | 2026-09-02 | 4 | ElastiCache engine is REDIS OSS (not Valkey, not Memcached), on a NODE-BASED cluster (not Serverless), created via the "Cluster cache" flow (not "Easy create") | Memcached is disqualified on capability — no `SETNX` semantics, no Lua, no persistence, and the M3 coalescing lock and the M4 rate limiter both depend on Redis primitives. Valkey is wire-compatible and cheaper and AWS pushes it by default, but every M3 measurement (`commandTimeout` 100→500ms calibration, hit-rate, breaker tuning) was taken against Redis — swapping the engine mid-curriculum adds a variable to a stage that is not about caching. Serverless was rejected twice over: a monthly floor far above `cache.t4g.micro`, and it HIDES AZ placement, which is the exact thing this stage needs to observe. "Easy create" was rejected for the same reason — it silently picks the AZ | t4g.micro is Graviton where the 09-01 forecast said t3.micro, so the Stage 6 cost comparison is against a slightly different (cheaper) part than forecast — note it rather than pretend the forecast was exact. Also carrying a Redis engine that AWS is steering away from; revisit at M5/M9 when the cost difference starts to matter |
 | 2026-09-03 | 4 | Task definition has NO task role; only the task EXECUTION role (`ecsTaskExecutionRole` with the AWS-managed `AmazonECSTaskExecutionRolePolicy`) | the two roles answer two different questions. The execution role is what the ECS AGENT uses to stand the task up — pull from ECR, write to CloudWatch Logs — before my code exists; the pull and the log driver are both the agent's work, so both permissions belong there. The task role is what MY CODE gets when it calls AWS APIs from inside the container, and `shortn` makes none: Postgres by password, Redis over TCP, no S3, no SQS, nothing. An empty task role is the honest statement of that. Attaching one "in case" is the god-role habit M7 exists to break. Honest note: I first said no role was needed at all because "the endpoints route the pull" — I had fused reachability with authorization, and the console corrected me | the managed execution policy does NOT include `logs:CreateLogGroup`, so `awslogs-create-group` is a trap — I pre-created the log group by hand rather than widening the role. When secrets move to Secrets Manager (M7) the EXECUTION role gains `secretsmanager:GetSecretValue`, not the task role — same principle, the stagehand fetches the props. The moment `shortn` calls an AWS API (M5 SQS is the first candidate) the task role stops being empty and this row gets amended |
 | 2026-09-03 | 4 | ElastiCache KEPT in cluster-mode-ENABLED (it came up that way — `clustercfg.` endpoint) for the first S5 deploy, rather than recreated cluster-mode-disabled before touching ECS | get the pipe working end to end first, then narrow variables one at a time. With 1 shard / 0 replicas a plain client works because a single node owns all 16384 slots, so there is no `MOVED` redirect to mishandle. Recreating costs ~10 min on a session where the plumbing had not yet been proven once; if it had failed for some other reason I would not know which of two changes to blame | I am running a topology my M3 client was not written for, on a stage that is not about Redis. If a Redis error surfaces anywhere in S5 the FIRST suspect is this row, not the ALB or ECS. Also: multi-key operations and Lua must hash to one slot under cluster mode — the M3 SETNX lock and the M4 rate limiter are single-key, so fine today; revisit before anything multi-key lands |
+| 2026-09-09 | 4 | Migrations against the private RDS run as a ONE-OFF ECS TASK (`run-task`, same task definition, one app subnet, `shortn-tasks-sg`, `containerOverrides.command = ["node","dist/migrate.js"]`), run by hand BEFORE the service is updated — over (b) a bastion/SSM host, (c) migrate-on-boot, and (d) a `POST /migrate` endpoint | it reuses every network decision already made: the migrate task wears the tasks SG, which is the only thing `shortn-data-sg` lets through, so nothing new exists to reach the DB. (b) is a new billable plus a SECOND path into the DB (new SG rule) plus a teardown line — "not scalable" was the wrong objection, bastions are for humans. (c) races 3 tasks over the same DDL on every deploy, which is exactly the moment schema changes must not race. (d) sits behind an internet-facing ALB with no auth until M7 — anyone can run DDL on prod — and is fused to the app image, so the code needing the schema deploys before anything can call it | (1) a HUMAN presses the button: nothing ties "run migrate task" to "update service", so skipping it reproduces the 09-03 500; the fix is CI running both in order (filed with the M9 image-build item). (2) the migration runs while 3 OLD tasks are still serving, so every migration must be safe for the old code — additive only, no renames, no drops. I have committed to expand-contract as a rule before M6 has taught it; the deferred `bulk_job_results` DROP is the first casualty |
+| 2026-09-09 | 4 | Migration runner is a Node script (`src/migrate.ts`, uses the `pg` client already in the image, bookkeeping table `migrations`, each file + its INSERT in one transaction, `process.exit(1)` on any failure) — over `apk add bash postgresql-client` to keep the existing `infra/migrate.sh` | `node:20-alpine` has neither `bash` nor `psql`; the shell script would have died on its shebang. Adding them puts a second Postgres client and a shell (~30 MB) into the prod image for a job the `pg` driver already does. Also the shell script had no memory — it re-ran every file every run, so the second deploy would have failed on `CREATE TABLE` in 0001 and the "migrate before deploy" rule would have been broken on its second use | I own a migration tool now, ~40 lines, instead of a maintained one (Knex/Flyway/Prisma). No down-migrations, no checksum of applied files, no lock against two runners at once (fine today: one human, one task). `client.query(wholeFile)` sends a file as ONE string where `psql -f` split on `;` — found a missing semicolon 0008 had been hiding since M2. The runner uses the app `pool` with `query_timeout: 5000`, which a long backfill would trip |
 | 2026-09-03 | 4 | ECS service health-check grace period = 60s, not the console default of 0 | with 0, ECS trusts the ALB's health verdict from the moment the task starts. Node takes a few seconds to boot and open its PG/Redis connections; the ALB probes into that window, gets a refused connection, ECS reads "unhealthy" and kills the task, then starts another that gets probed too early — tasks cycle forever with nothing in my logs, because my code never got far enough to write anything. 60s says "ignore the ALB's opinion for the first minute." Same shape as the M1 `query_timeout` and M3 `commandTimeout` calibrations: a timer must be set from the thing it guards, not from the default | 60s is a guess from "Express boots in a few seconds," not a measurement. It also means a task that is GENUINELY broken at boot gets 60s of grace before ECS acts on it — a deploy of a bad image takes a minute longer to show up as unhealthy. Measure real boot-to-listening in step 8 and tighten it |
 
 ---
@@ -946,7 +1044,12 @@ CARRIED / DON'T FORGET:
   linux/amd64 -t <registry>/shortn:m4 --push .`; `manifest inspect` again. RECEIPT: the
   image digest `6ee2…` was IDENTICAL before and after — only the platform field changed
   from arm64 to amd64. Same bytes, wrong name tag, and the tag is what gets matched. Then
-  service → Force new deployment. Still to do: commit the command as `"docker:build"`.
+  service → Force new deployment. ~~Still to do: commit the command as `"docker:build"`.~~
+  **AMENDED 2026-09-09:** this entry said `--platform` was "removed from `FROM`" on 09-03.
+  It was NOT — the Dockerfile still had the line on 09-09, six days later. The 09-03 build
+  worked only because `--platform` on the command overrides it. Removed for real on 09-09,
+  `"docker:build"` committed, manifest checked → `amd64`. The F-14 entry itself drifted
+  from the repo — a fix recorded, never re-read. Fourth notes-vs-reality miss this month.
 - **What I'd watch for in production:** a task definition that cycles on
   `CannotPullContainerError` / `exec format error` immediately after a "harmless" rebuild
   from a different machine — check `manifest inspect` before checking anything in AWS. More
@@ -990,11 +1093,18 @@ CARRIED / DON'T FORGET:
 | 2026-04-28 | 1 | RDS db.t3.micro, EC2 t3.micro x2, VPC, EC2-Other | 2h | $0.11 | RDS $0.06, EC2 $0.03, VPC $0.01, EC2-Other $0.01 — Mumbai region |
 | 2026-05-08 | 2 | Route 53, EC2, RDS, VPC, Others | ~2d | $0.72 (+$0.13 tax = $0.85) | Route 53 $0.50, EC2 $0.09, RDS $0.06, VPC $0.04, Others $0.03 — ALB + load test session |
 | 2026-06-10 | 3 | EC2, RDS, VPC, ElastiCache, Route 53 | ~6h | $0.76 (+$0.14 tax = $0.90) | ElastiCache too short-lived to bill; Route 53 $0.50 flat fee dominates again |
+| 2026-09-02 | 4 | RDS, ElastiCache, VPC endpoints (6 ENIs) | ~45m | <<FILL from Cost Explorer>> | steps 1–4 only; no ALB, no tasks — cleanest read on the fixed-cost floor |
+| 2026-09-03 | 4 | ALB, Fargate ×3, RDS, ElastiCache, VPC endpoints (6 ENIs) | ~2.5h | <<FILL — split by service>> | first row with ALB + Fargate; forecast ~$0.45; test the ordering endpoints > Fargate > ALB > RDS ≈ ElastiCache |
+| 2026-09-09 | 4 | ALB, Fargate ×3 + 2 one-off migrate tasks (~1 min each), RDS, ElastiCache, VPC endpoints (6 ENIs) | <<FILL>>h | <<FILL — split by service>> | full stack up for the rebuild + migrations + receipts; 2 extra task-minutes for the migrate runs should be invisible |
 
 
-**Running total:** $1.59 (excl. tax) / $1.86 (incl. tax)
+**Running total:** $1.59 (excl. tax) / $1.86 (incl. tax) — **STALE, three rows unfilled above**
 
 **No cost row for 2026-09-01** — planning session, zero resources created, nothing billable.
+
+**THREE COST ROWS OUTSTANDING (09-02, 09-03, 09-09) — placeholder rows added above, fill
+from Cost Explorer before the next build.** They were due on 09-08 and were not pulled; if
+anything survived a teardown, this is the only place it shows.
 
 **COST ROW OUTSTANDING for 2026-09-02** — first billable S5 session. RDS db.t3.micro +
 ElastiCache cache.t4g.micro + 6 interface-endpoint ENIs, all up for roughly 45 minutes, all
